@@ -17,12 +17,12 @@ import nearest_neighbors.lib.python.nearest_neighbors as nearest_neighbors
 
 class ConfigSensatUrban:
     k_n = 16  # KNN
-    num_layers = 5  # Number of layers
+    num_layers = 2  # Number of layers
     num_points = 65536  # Number of input points
     num_classes = 13  # Number of valid classes
     sub_grid_size = 0.2  # preprocess_parameter
 
-    batch_size = 4  # batch_size during training
+    batch_size = 2  # batch_size during training
     val_batch_size = 14  # batch_size during validation and test
     train_steps = 500  # Number of steps per epochs
     val_steps = 100  # Number of validation steps per epoch
@@ -31,7 +31,7 @@ class ConfigSensatUrban:
     d_out = [16, 64, 128, 256, 512]  # feature dimension
 
     noise_init = 3.5  # noise initial parameter
-    max_epoch = 100  # maximum epoch during training
+    max_epoch = 50  # maximum epoch during training
     learning_rate = 1e-2  # initial learning rate
     lr_decays = {i: 0.95 for i in range(0, 500)}  # decay rate of learning rate
 
