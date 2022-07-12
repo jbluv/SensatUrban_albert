@@ -14,7 +14,7 @@ import time, pickle, argparse, glob, os, shutil
 class SensatUrban:
     def __init__(self):
         self.name = 'SensatUrban'
-        root_path = '/hy-tmp/SensatUrban/Dataset'  # path to the dataset
+        root_path = '/hy-tmp/SensatUrban_albert/Dataset'  # path to the dataset
         self.path = join(root_path, self.name)
         self.label_to_names = {0: 'Ground', 1: 'High Vegetation', 2: 'Buildings', 3: 'Walls',
                                4: 'Bridge', 5: 'Parking', 6: 'Rail', 7: 'traffic Roads', 8: 'Street Furniture',

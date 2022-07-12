@@ -13,89 +13,6 @@ def log_out(out_str, f_out):
     f_out.flush()
     print(out_str)
 
-
-
-class point_transformer(tf.keras.layers.Layer):
-
-    def __init__(self, dim=8, attn_hidden=4, pos_hidden=8, neighbors=None, name=None, **kwargs):
-        super(point_transformer, self).__init__(name=name, **kwargs)
-
-        self.neighbors = neighbors
-
-        self.initializer = tf.keras.initializers.normal()
-
-        self.linear1 = tf.keras.layers.Dense(dim, activation='relu',
-                                             kernel_initializer=self.initializer,
-                                             name='self.linear1')
-        self.linear2 = tf.keras.layers.Dense(dim, activation=None,
-                                             kernel_initializer=self.initializer,
-                                             name='self.linear2')
-        self.MLP_attn1 = layers.Dense(attn_hidden, activation='relu',
-                                      kernel_initializer=self.initializer,
-                                      name='attn_hidden')
-        self.MLP_attn2 = layers.Dense(dim, activation='relu',
-                                      kernel_initializer=self.initializer,
-                                      name='self.MLP_attn2')
-        self.MLP_pos1 = layers.Dense(pos_hidden, activation='relu',
-                                     kernel_initializer=self.initializer,
-                                     name='pos_hidden')
-        self.MLP_pos2 = layers.Dense(dim, activation='relu',
-                                     kernel_initializer=self.initializer,
-                                     name='self.MLP_pos2')
-        self.linear_query = layers.Dense(dim, activation='relu',
-                                         kernel_initializer=self.initializer,
-                                         name='self.linear_query')
-        self.linear_key = layers.Dense(dim, activation='relu',
-                                       kernel_initializer=self.initializer,
-                                       name='self.linear_key')
-        self.linear_value = layers.Dense(dim, activation='relu',
-                                         kernel_initializer=self.initializer,
-                                         name='self.linear_value')
-
-    def call(self, feature, pos):
-        n = pos.shape[-2]
-
-        x = self.linear1(feature)
-
-        q = self.linear_query(x)
-        k = self.linear_key(x)
-        v = self.linear_value(x)
-
-        # qk = q[:, None, :, :] - k[:, :, None, :]
-        # print("pos")
-        # print(pos)
-        qk = q - k
-        pos_rel = pos - pos
-        dist = tf.norm(pos_rel, axis=-1)
-        # print("qk")
-        # print(qk)
-        # print("pos_rel")
-        # print(pos_rel)
-        # print("dist")
-        # print(dist)
-        # dists = square_distance(pos, pos)
-        # print("dists")
-        # print(dists)
-        if self.neighbors != None:
-            __, indices = tf.nn.top_k(-dist, k=self.neighbors)
-
-            qk = index_sieve(qk, indices, fix_dim=2)
-            pos_rel = index_sieve(pos_rel, indices, fix_dim=2)
-            v = index_sieve(v, indices, fix_dim=1)
-
-        pos_emb = self.MLP_pos1(pos_rel)
-        pos_emb = self.MLP_pos2(pos_emb)
-        
-        mlp_attn1 = self.MLP_attn1(qk + pos_emb)
-        
-        attn = tf.nn.softmax(self.MLP_attn2(mlp_attn1), axis=-2)
-        out = attn*(v+ pos_emb)  
-
-        out = tf.math.reduce_sum(out, axis=-2)
-        # out = self.linear2(out)
-
-        return out
-
 class Network2:
     def __init__(self, dataset, config):
         flat_inputs = dataset.flat_inputs
@@ -299,6 +216,7 @@ class Network2:
         val_total_seen = 0
 
         for step_id in range(self.config.val_steps):
+            print(step_id)
             if step_id % 50 == 0:
                 print(str(step_id) + ' / ' + str(self.config.val_steps))
             try:
@@ -382,10 +300,9 @@ class Network2:
         num_points = tf.shape(f_concat)[1]
         d = f_concat.get_shape()[3].value
 
-        pt = point_transformer(dim=d_out, neighbors=10, name='self.pt_down1')
-        f_pt = pt.call(f_neighbors, f_xyz) 
+        pt = point_transformer(dim=d_out, name='self.pt_down1')
+        f_pt = pt.call(f_concat, f_xyz) 
         # f_xyz as pos encoding 
-
         # print("f_pt_prev")
         # print(f_pt)
         f_pt = tf.reshape(f_pt, [batch_size, num_points, 1, d])
@@ -393,21 +310,12 @@ class Network2:
                     # # -------------             ------------- # #
 
         # f_pc_agg = self.att_pooling(f_concat, d_out // 2, name + 'att_pooling_1', is_training)
-        # print("f_concat1")
-        # print(f_concat)
-        # print("f_pc_agg1")
-        # print(f_pc_agg)
         
         # # # # # # -------------      round2       ------------- # # # # # # 
 
         # f_xyz = tf_util.conv2d(f_xyz, d_out // 2, [1, 1], name + 'mlp2', [1, 1], 'VALID', True, is_training)
         # f_neighbours = self.gather_neighbour(tf.squeeze(f_pc_agg, axis=2), neigh_idx)
         # f_concat = tf.concat([f_neighbours, f_xyz], axis=-1)
-
-        # print("f_concat2")
-        # print(f_concat)
-        # print("f_pc_agg2")
-        # print(f_pc_agg)
 
                     # # ------------- transformer2 ------------- # #
         # batch_size = tf.shape(f_concat)[0]
@@ -420,14 +328,6 @@ class Network2:
         # f_pt = tf_util.conv2d(f_pt, d_out, [1, 1], name + 'mlp', [1, 1], 'VALID', True, is_training)
                     # # -------------             ------------- # #
         # f_pc_agg = self.att_pooling(f_concat, d_out, name + 'att_pooling_2', is_training)
-        # print("f_neighbors")
-        # print(f_neighbors)
-        # print("f_xyz")
-        # print(f_xyz)
-        # print("f_pc_agg")
-        # print(f_pc_agg)
-        # print("f_pt")
-        # print(f_pt)
         return f_pt
 
     def relative_pos_encoding(self, xyz, neigh_idx):
@@ -532,3 +432,73 @@ class Network2:
     #     res = tf.einsum('bmnf,bmnf->bmf', attn, v + pos_enc)
     #     res = fc2(res) + pre
     #     return res
+
+    
+
+class point_transformer():
+
+    def __init__(self, dim=8, attn_hidden=4, pos_hidden=8, neighbors=None, name=None, **kwargs):
+        self.neighbors = neighbors
+
+        self.initializer = tf.initializers.random_normal()
+    
+        self.linear1 = tf.layers.Dense(dim, activation='relu',
+                                             kernel_initializer=self.initializer,
+                                             name='self.linear1')
+        self.linear2 = tf.layers.Dense(dim, activation=None,
+                                             kernel_initializer=self.initializer,
+                                             name='self.linear2')
+        self.MLP_attn1 = tf.layers.Dense(attn_hidden, activation='relu',
+                                      kernel_initializer=self.initializer,
+                                      name='attn_hidden')
+        self.MLP_attn2 = tf.layers.Dense(dim, activation='relu',
+                                      kernel_initializer=self.initializer,
+                                      name='self.MLP_attn2')
+        self.MLP_pos1 = tf.layers.Dense(pos_hidden, activation='relu',
+                                     kernel_initializer=self.initializer,
+                                     name='pos_hidden')
+        self.MLP_pos2 = tf.layers.Dense(dim, activation='relu',
+                                     kernel_initializer=self.initializer,
+                                     name='self.MLP_pos2')
+        self.linear_query = tf.layers.Dense(dim, activation='relu',
+                                         kernel_initializer=self.initializer,
+                                         name='self.linear_query')
+        self.linear_key = tf.layers.Dense(dim, activation='relu',
+                                       kernel_initializer=self.initializer,
+                                       name='self.linear_key')
+        self.linear_value = tf.layers.Dense(dim, activation='relu',
+                                         kernel_initializer=self.initializer,
+                                         name='self.linear_value')
+
+    def call(self, feature, pos):
+        n = pos.shape[-2]
+
+        x = self.linear1(feature)
+
+        q = self.linear_query(x)
+        k = self.linear_key(x)
+        v = self.linear_value(x)
+
+        # qk = q[:, None, :, :] - k[:, :, None, :]
+        # print("pos")
+        # print(pos)
+        qk = q - k
+        pos_rel = pos - pos
+
+        pos_emb = self.MLP_pos1(pos_rel)
+        pos_emb = self.MLP_pos2(pos_emb)
+        
+        print("pos_emb")
+        print(pos_emb)
+        print("qk")
+        print(qk)
+        print("v")
+        print(v)
+        mlp_attn1 = self.MLP_attn1(qk+ pos_emb)
+        attn = tf.nn.softmax(self.MLP_attn2(mlp_attn1), axis=-2)
+        out = attn*(v+pos_emb)
+
+        out = tf.math.reduce_sum(out, axis=-2)
+        # out = self.linear2(out)
+
+        return out
