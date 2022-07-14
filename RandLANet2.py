@@ -14,7 +14,7 @@ def log_out(out_str, f_out):
     print(out_str)
 
 class Network2:
-    def __init__(self, dataset, config):
+    def __init__(self, dataset, config, restore_snap):
         flat_inputs = dataset.flat_inputs
         self.config = config
         # Path of the result folder
@@ -98,6 +98,9 @@ class Network2:
         self.merged = tf.summary.merge_all()
         self.train_writer = tf.summary.FileWriter(config.train_sum_dir, self.sess.graph)
         self.sess.run(tf.global_variables_initializer())
+        if restore_snap is not None:
+            self.saver.restore(self.sess, restore_snap)
+            print("Model restored from " + restore_snap)
 
     def inference(self, inputs, is_training):
 
