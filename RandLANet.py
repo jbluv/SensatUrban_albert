@@ -21,7 +21,7 @@ class Network:
         # Path of the result folder
         if self.config.saving:
             if self.config.saving_path is None:
-                self.saving_path = time.strftime('results/Log_%Y-%m-%d', time.gmtime())
+                self.saving_path = time.strftime('results/Log_%Y-%m-%d_%H-%M-%S', time.gmtime())
                 self.saving_path = self.saving_path + '_' + dataset.name
             else:
                 self.saving_path = self.config.saving_path
@@ -48,7 +48,8 @@ class Network:
             self.mIou_list = [0]
             self.loss_type = 'sqrt'  # wce, lovas
             self.class_weights = DP.get_class_weights(dataset.num_per_class, self.loss_type)
-            self.Log_file = open('log_train_' + dataset.name + '.txt', 'a')
+            self.T = time.strftime('_%Y-%m-%d_%H-%M-%S', time.gmtime())
+            self.Log_file = open('log_train_' + dataset.name+ '_original' + self.T + '.txt', 'a')
 
         with tf.variable_scope('layers'):
             self.logits = self.inference(self.inputs, self.is_training)

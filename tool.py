@@ -17,7 +17,7 @@ import nearest_neighbors.lib.python.nearest_neighbors as nearest_neighbors
 
 class ConfigSensatUrban:
     k_n = 16  # KNN
-    num_layers = 2  # Number of layers
+    num_layers = 3  # Number of layers
     num_points = 65536  # Number of input points
     num_classes = 13  # Number of valid classes
     sub_grid_size = 0.2  # preprocess_parameter
