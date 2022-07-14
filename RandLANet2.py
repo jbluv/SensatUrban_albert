@@ -20,7 +20,7 @@ class Network2:
         # Path of the result folder
         if self.config.saving:
             if self.config.saving_path is None:
-                self.saving_path = time.strftime('results/Log_%Y-%m-%d', time.gmtime())
+                self.saving_path = time.strftime('results/Log_%Y-%m-%d_%H-%M-%S', time.gmtime())
                 self.saving_path = self.saving_path + '_' + dataset.name
             else:
                 self.saving_path = self.config.saving_path
@@ -47,7 +47,8 @@ class Network2:
             self.mIou_list = [0]
             self.loss_type = 'sqrt'  # wce, lovas
             self.class_weights = DP.get_class_weights(dataset.num_per_class, self.loss_type)
-            self.Log_file = open('log_train_' + dataset.name + '.txt', 'a')
+            self.T = time.strftime('_%Y-%m-%d_%H-%M-%S', time.gmtime())
+            self.Log_file = open('log_train_' + dataset.name + self.T + '.txt', 'a')
 
         with tf.variable_scope('layers'):
             self.logits = self.inference(self.inputs, self.is_training)
@@ -296,36 +297,24 @@ class Network2:
         f_neighbors = self.gather_neighbour(tf.squeeze(feature, axis=2), neigh_idx)
         f_concat = tf.concat([f_neighbors, f_xyz], axis=-1)
                     # # ------------- transformer1 ------------- # #
-        batch_size = tf.shape(f_concat)[0]
-        num_points = tf.shape(f_concat)[1]
-        d = f_concat.get_shape()[3].value
-
-        pt = point_transformer(dim=d_out, name='self.pt_down1')
-        f_pt = pt.call(f_concat, f_xyz) 
+        # pt = point_transformer(dim=d_out, name='self.pt_down1')
+        # f_pt = pt.call(f_concat, f_xyz, d_out, name+ 'point_trans_1', is_training) 
         # f_xyz as pos encoding 
-        # print("f_pt_prev")
-        # print(f_pt)
-        f_pt = tf.reshape(f_pt, [batch_size, num_points, 1, d])
-        f_pt = tf_util.conv2d(f_pt, d_out, [1, 1], name + 'mlp', [1, 1], 'VALID', True, is_training)
+        
                     # # -------------             ------------- # #
 
-        # f_pc_agg = self.att_pooling(f_concat, d_out // 2, name + 'att_pooling_1', is_training)
+        f_pc_agg = self.att_pooling(f_concat, d_out // 2, name + 'att_pooling_1', is_training)
         
         # # # # # # -------------      round2       ------------- # # # # # # 
 
-        # f_xyz = tf_util.conv2d(f_xyz, d_out // 2, [1, 1], name + 'mlp2', [1, 1], 'VALID', True, is_training)
-        # f_neighbours = self.gather_neighbour(tf.squeeze(f_pc_agg, axis=2), neigh_idx)
-        # f_concat = tf.concat([f_neighbours, f_xyz], axis=-1)
+        f_xyz = tf_util.conv2d(f_xyz, d_out//2, [1, 1], name + 'mlp3', [1, 1], 'VALID', True, is_training)
+        f_neighbours = self.gather_neighbour(tf.squeeze(f_pc_agg, axis=2), neigh_idx)
+        f_concat = tf.concat([f_neighbours, f_xyz], axis=-1)
 
                     # # ------------- transformer2 ------------- # #
-        # batch_size = tf.shape(f_concat)[0]
-        # num_points = tf.shape(f_concat)[1]
-        # d = f_concat.get_shape()[3].value
 
-        # pt = point_transformer(dim=d_out, neighbors=10, name='self.pt_down1')
-        # f_pt = pt.call(f_concat, f_xyz)
-        # f_pt = tf.reshape(f_pt, [batch_size, num_points, 1, d])
-        # f_pt = tf_util.conv2d(f_pt, d_out, [1, 1], name + 'mlp', [1, 1], 'VALID', True, is_training)
+        pt = point_transformer(dim=d_out, name='self.pt_down2')
+        f_pt = pt.call(f_concat, f_xyz, d_out, name+ 'point_trans_2', is_training)
                     # # -------------             ------------- # #
         # f_pc_agg = self.att_pooling(f_concat, d_out, name + 'att_pooling_2', is_training)
         return f_pt
@@ -378,6 +367,10 @@ class Network2:
         d = pc.get_shape()[2].value
         index_input = tf.reshape(neighbor_idx, shape=[batch_size, -1])
         features = tf.batch_gather(pc, index_input)
+        print("pc.get_shape()")
+        print(pc.get_shape())
+        print("features.get_shape()")
+        print(features.get_shape())
         features = tf.reshape(features, [batch_size, num_points, tf.shape(neighbor_idx)[-1], d])
         return features
 
@@ -470,18 +463,17 @@ class point_transformer():
                                          kernel_initializer=self.initializer,
                                          name='self.linear_value')
 
-    def call(self, feature, pos):
+    def call(self, feature, pos, d_out, name, is_training):
         n = pos.shape[-2]
-
+        batch_size = tf.shape(feature)[0]
+        num_points = tf.shape(feature)[1]
+        d = feature.get_shape()[3].value
         x = self.linear1(feature)
 
         q = self.linear_query(x)
         k = self.linear_key(x)
         v = self.linear_value(x)
 
-        # qk = q[:, None, :, :] - k[:, :, None, :]
-        # print("pos")
-        # print(pos)
         qk = q - k
         pos_rel = pos - pos
 
@@ -500,5 +492,7 @@ class point_transformer():
 
         out = tf.math.reduce_sum(out, axis=-2)
         # out = self.linear2(out)
-
+   
+        out = tf.reshape(out, [batch_size, num_points, 1, d])
+        out = tf_util.conv2d(out, d_out//2, [1, 1], name + 'ml', [1, 1], 'VALID', True, is_training)
         return out
