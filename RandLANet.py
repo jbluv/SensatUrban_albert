@@ -15,7 +15,7 @@ def log_out(out_str, f_out):
 
 
 class Network:
-    def __init__(self, dataset, config):
+    def __init__(self, dataset, config, restore_snap=None):
         flat_inputs = dataset.flat_inputs
         self.config = config
         # Path of the result folder
@@ -99,6 +99,33 @@ class Network:
         self.merged = tf.summary.merge_all()
         self.train_writer = tf.summary.FileWriter(config.train_sum_dir, self.sess.graph)
         self.sess.run(tf.global_variables_initializer())
+        structure = "Runnnig RandLANet: LocSE + att_pooling + LocSE + att_pooling"
+        cfg = config
+        k_n = "k_n: "+str(cfg.k_n)
+        num_layers = "num_layers: "+str(cfg.num_layers)
+        num_points = "num_points: "+str(cfg.num_points)
+        num_classes = "num_classes: "+str(cfg.num_classes)
+        sub_grid_size = "sub_grid_size: "+str(cfg.sub_grid_size)
+        batch_size = "batch_size: "+str(cfg.batch_size)
+        val_batch_size = "val_batch_size: "+str(cfg.val_batch_size)
+        train_steps = "train_steps: "+str(cfg.train_steps)
+        val_steps = "train_steps: "+str(cfg.val_steps)
+        d_out = "d_out: "+str(cfg.d_out)
+
+        print(structure)
+        print(k_n)
+        print(num_layers)
+        print(num_points)
+        print(num_classes)
+        print(sub_grid_size)
+        print(batch_size)
+        print(val_batch_size)
+        print(train_steps)
+        print(val_steps)
+        print(d_out)
+        if restore_snap is not None:
+            self.saver.restore(self.sess, restore_snap)
+            print("Model restored from " + restore_snap)
 
     def inference(self, inputs, is_training):
 
@@ -145,7 +172,9 @@ class Network:
 
     def train(self, dataset):
         log_out('****EPOCH {}****'.format(self.training_epoch), self.Log_file)
+        
         self.sess.run(dataset.train_init_op)
+
         while self.training_epoch < self.config.max_epoch:
             
             t_start = time.time()
@@ -292,7 +321,6 @@ class Network:
         f_neighbours = self.gather_neighbour(tf.squeeze(feature, axis=2), neigh_idx)
         f_concat = tf.concat([f_neighbours, f_xyz], axis=-1)
         f_pc_agg = self.att_pooling(f_concat, d_out // 2, name + 'att_pooling_1', is_training)
-
         f_xyz = tf_util.conv2d(f_xyz, d_out // 2, [1, 1], name + 'mlp2', [1, 1], 'VALID', True, is_training)
         f_neighbours = self.gather_neighbour(tf.squeeze(f_pc_agg, axis=2), neigh_idx)
         f_concat = tf.concat([f_neighbours, f_xyz], axis=-1)
