@@ -98,6 +98,23 @@ class Network3:
         self.merged = tf.summary.merge_all()
         self.train_writer = tf.summary.FileWriter(config.train_sum_dir, self.sess.graph)
         self.sess.run(tf.global_variables_initializer())
+        cfg = config
+        structure = "# # # Runnnig RandLANet3 multihead: LocSE + scaled + LocSE + scaled"
+        k_n = "k_n: "+str(cfg.k_n)
+        num_layers = "num_layers: "+str(cfg.num_layers)
+        num_points = "num_points: "+str(cfg.num_points)
+        num_classes = "num_classes: "+str(cfg.num_classes)
+        sub_grid_size = "sub_grid_size: "+str(cfg.sub_grid_size)
+        batch_size = "batch_size: "+str(cfg.batch_size)
+        val_batch_size = "val_batch_size: "+str(cfg.val_batch_size)
+        train_steps = "train_steps: "+str(cfg.train_steps)
+        val_steps = "train_steps: "+str(cfg.val_steps)
+        d_out = "d_out: "+str(cfg.d_out)
+        log_output = [structure, k_n, num_layers, num_points, num_classes, sub_grid_size,\
+                   batch_size, val_batch_size, train_steps, val_steps, d_out]
+        for i in log_output:
+            log_out(str(i), self.Log_file)
+            
         if restore_snap is not None:
             self.saver.restore(self.sess, restore_snap)
             print("Model restored from " + restore_snap)
@@ -293,17 +310,14 @@ class Network3:
 
 
     def building_block(self, xyz, feature, neigh_idx, d_out, name, is_training):
-
-        # # # LocSE + scaled  + LocSE + scaled # # # # #
         # # # # # -------------      round1       ------------- # # ## # # 
         d_in = feature.get_shape()[-1].value
         f_xyz = self.relative_pos_encoding(xyz, neigh_idx)
-      
         f_xyz = tf_util.conv2d(f_xyz, d_in, [1, 1], name + 'mlp1', [1, 1], 'VALID', True, is_training)
         f_neighbors = self.gather_neighbour(tf.squeeze(feature, axis=2), neigh_idx)
         f_concat = tf.concat([f_neighbors, f_xyz], axis=-1)
                     # # ------------- transformer1 ------------- # #
-        pt = point_transformer(dim=d_out, name='self.pt_down1')
+        pt = multi_head()
         f_pt = pt.call(f_concat, d_out//2, name+ 'point_trans_1', is_training) 
                     # # -------------             ------------- # #
         # 
@@ -316,7 +330,7 @@ class Network3:
         f_concat = tf.concat([f_neighbours, f_xyz], axis=-1)
                     # # ------------- transformer2 ------------- # #
 
-        pt = point_transformer(dim=d_out, neighbors=8, name='self.pt_down2')
+        pt = multi_head()
         f_pt = pt.call(f_concat, d_out, name+ 'point_trans_2', is_training)
                     # # -------------             ------------- # #
         # f_pc_agg = self.att_pooling(f_concat, d_out, name + 'att_pooling_2', is_training)
@@ -394,44 +408,46 @@ class Network3:
         return f_agg
 
 
-class point_transformer():
+class multi_head():
 
-    def __init__(self, dim=8, attn_hidden=4, pos_hidden=8, neighbors=None, name=None, **kwargs):
-        self.neighbors = neighbors
+    def __init__(self, **kwargs):
         self.initializer = tf.initializers.random_normal()
-        self.norm = tf.keras.layers.LayerNormalization(epsilon=1e-6)
 
     def call(self, feature, d_out, name, is_training):
 
-        # # # # # # LocSE + scaled + LocSE + scaled# # # # #
         batch_size = tf.shape(feature)[0]
         num_points = tf.shape(feature)[1]
         num_neigh = tf.shape(feature)[2]
         d = feature.get_shape()[3].value
+        
+        feature = tf.reshape(feature, [-1, num_neigh, d])
 
-        residual = tf.reshape(feature, [batch_size, num_points, num_neigh, d])
-        residual = tf.layers.dense(feature, d, activation=None, name=name +'fc_res')
-
+        residual = feature
+        # assert()
         q = tf.layers.dense(feature, d, activation=None, name=name +'fc_q')
         k = tf.layers.dense(feature, d, activation=None, name=name +'fc_k')
         v = tf.layers.dense(feature, d, activation=None, name=name +'fc_v')
-        # q = self.linear_query(feature)
-        # k = self.linear_key(feature)
-        # v = self.linear_value(feature)
     
         q_dk = q/d**0.5
 
-        q_dk = tf.reshape(q_dk, [batch_size, num_points, num_neigh, d])
-        k = tf.reshape(k, [batch_size, num_points, num_neigh, d])
-        v = tf.reshape(v, [batch_size, num_points, num_neigh, d])
+        # q_dk = tf.reshape(q_dk, [batch_size, num_points, num_neigh, d])
+        # k = tf.reshape(k, [batch_size, num_points, num_neigh, d])
+        # v = tf.reshape(v, [batch_size, num_points, num_neigh, d])
+        q_dk = tf.reshape(q_dk, [-1, num_neigh, d])
+        k = tf.reshape(k, [-1,  num_neigh, d])
+        v = tf.reshape(v, [-1,  num_neigh, d])
 
-        attn = tf.matmul(q_dk, tf.transpose(k, perm=[0,1,3,2]))   
-        attn = tf.nn.softmax(attn, axis=-1)
+        attn = tf.matmul(q_dk, tf.transpose(k, perm=[0,2,1])) 
+        # attn = tf.matmul(q_dk, tf.transpose(k, perm=[0,1,3,2]))   
+        attn = tf.nn.softmax(attn, axis=1)
         attn = tf.nn.dropout(attn, rate = 0.1, seed = 1)
         out = tf.matmul(attn,v)
         out += residual
-        out = self.norm(out)
+        out = tf.layers.batch_normalization(out, -1, 0.99, 1e-6, training=is_training)
+        
+        out = tf.reduce_sum(out, axis=1)
 
-        out = tf.reshape(out, [batch_size, num_points, 1, 16*d])
+        # N * n * k_n * d
+        out = tf.reshape(out, [batch_size, num_points, 1, d])
         out = tf_util.conv2d(out, d_out, [1, 1], name + 'ml', [1, 1], 'VALID', True, is_training)
         return out
