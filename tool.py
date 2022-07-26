@@ -3,6 +3,7 @@ import numpy as np
 import colorsys, random, os, sys
 import open3d as o3d
 from helper_ply import read_ply, write_ply
+import tensorflow as tf
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
@@ -17,18 +18,19 @@ import nearest_neighbors.lib.python.nearest_neighbors as nearest_neighbors
 
 class ConfigSensatUrban:
     k_n = 16  # KNN
-    num_layers = 3  # Number of layers
+    num_layers = 5  # Number of layers
     num_points = 65536  # Number of input points
     num_classes = 13  # Number of valid classes
     sub_grid_size = 0.2  # preprocess_parameter
 
-    batch_size = 2  # batch_size during training
-    val_batch_size = 14  # batch_size during validation and test
+    batch_size = 4  # batch_size during training
+    val_batch_size = 4  # batch_size during validation and test
     train_steps = 500  # Number of steps per epochs
     val_steps = 100  # Number of validation steps per epoch
 
     sub_sampling_ratio = [4, 4, 4, 4, 2]  # sampling ratio of random sampling at each layer
-    d_out = [16, 64, 128, 256, 512]  # feature dimension
+    d_out = [16, 64, 128, 256, 512]  # feature dimension for randlanet 
+    # d_out = [8, 16, 32, 64, 128]  # feature dimension for point transformer
 
     noise_init = 3.5  # noise initial parameter
     max_epoch = 50  # maximum epoch during training
@@ -280,3 +282,238 @@ class Plot:
             o3d.io.write_point_cloud(save_name, pcd)
         return
 
+
+def tf_augment_input(stacked_points, batch_inds):
+    """
+    Augment inputs with rotation, scale and noise
+    """
+    rot_type = "arbitrary"
+    augment_scale_min = 0.7
+    augment_scale_max = 1.3
+    augment_symmetries = [True, False, False]
+    augment_noise= 0.001
+    
+    # Parameter
+    num_batches = batch_inds[-1] + 1
+
+    # Rotation
+    if rot_type == "veritical":
+        stacked_points = tf.reshape(stacked_points,(-1,3))
+        theta = tf.random_uniform((num_batches,), minval=0, maxval=2 * np.pi)
+        # Rotation matrices
+        c, s = tf.cos(theta), tf.sin(theta)
+        cs0 = tf.zeros_like(c)
+        cs1 = tf.ones_like(c)
+        # c -s  0
+        # s  c  0
+        # 0  0  1
+        R = tf.stack([c, -s, cs0, s, c, cs0, cs0, cs0, cs1], axis=1)
+        R = tf.reshape(R, (-1, 3, 3))
+        # Create N x 3 x 3 rotation matrices to multiply with stacked_points
+        stacked_rots = tf.gather(R, batch_inds)
+        # Apply rotations
+        stacked_points = tf.reshape(tf.matmul(tf.expand_dims(stacked_points, axis=1), stacked_rots), [-1, 3])
+
+    elif rot_type == "arbitrary":
+        cs0 = tf.zeros((num_batches,))
+        cs1 = tf.ones((num_batches,))
+        # x rotation
+        thetax = tf.random_uniform((num_batches,), minval=0, maxval=2 * np.pi)
+        cx, sx = tf.cos(thetax), tf.sin(thetax)
+        Rx = tf.stack([cs1, cs0, cs0, cs0, cx, -sx, cs0, sx, cx], axis=1)
+        Rx = tf.reshape(Rx, (-1, 3, 3))
+        # y rotation
+        thetay = tf.random_uniform((num_batches,), minval=0, maxval=2 * np.pi)
+        cy, sy = tf.cos(thetay), tf.sin(thetay)
+        Ry = tf.stack([cy, cs0, -sy, cs0, cs1, cs0, sy, cs0, cy], axis=1)
+        Ry = tf.reshape(Ry, (-1, 3, 3))
+        # z rotation
+        thetaz = tf.random_uniform((num_batches,), minval=0, maxval=2 * np.pi)
+        cz, sz = tf.cos(thetaz), tf.sin(thetaz)
+        Rz = tf.stack([cz, -sz, cs0, sz, cz, cs0, cs0, cs0, cs1], axis=1)
+        Rz = tf.reshape(Rz, (-1, 3, 3))
+        # whole rotation
+        Rxy = tf.matmul(Rx, Ry)
+        R = tf.matmul(Rxy, Rz)
+        # Create N x 3 x 3 rotation matrices to multiply with stacked_points
+        stacked_rots = tf.gather(R, batch_inds)
+        # Apply rotations
+        stacked_points = tf.reshape(tf.matmul(tf.expand_dims(stacked_points, axis=1), stacked_rots), [-1, 3])
+    else:
+        raise ValueError('Unknown rotation augmentation : ' + self.augment_rotation)
+    # Scale
+   
+    # Choose random scales for each example
+    min_s = augment_scale_min
+    max_s = augment_scale_max
+    s = tf.random_uniform((num_batches, 3), minval=min_s, maxval=max_s)
+    symmetries = []
+    
+    for i in range(3):
+        if augment_symmetries[i]:
+            symmetries.append(tf.round(tf.random_uniform((num_batches, 1))) * 2 - 1)
+        else:
+            symmetries.append(tf.ones([num_batches, 1], dtype=tf.float32))
+    s *= tf.concat(symmetries, 1)
+    # Create N x 3 vector of scales to multiply with stacked_points
+    stacked_scales = tf.gather(s, batch_inds)
+    # Apply scales
+    stacked_points = stacked_points * stacked_scales
+    # Noise
+    noise = tf.random_normal(tf.shape(stacked_points), stddev=augment_noise)
+    stacked_points = stacked_points + noise
+    return stacked_points, s, R
+
+
+
+# def tf_augment_input(stacked_points, batch_inds):
+#     """
+#     Augment inputs with rotation, scale and noise
+#     """
+#     augment_scale_min = 0.7
+#     augment_scale_max = 1.3
+#     augment_symmetries = [True, False, False]
+#     augment_noise= 0.001
+    
+#     # Parameter
+#     num_batches = batch_inds[-1] + 1
+
+#     ##########
+#     # Rotation
+#     ##########
+#     # if self.augment_rotation == 'none':
+#     #     R = tf.eye(3, batch_shape=(num_batches,))
+#     # elif self.augment_rotation == 'vertical':
+#     #     # Choose a random angle for each element
+#     #     theta = tf.random_uniform((num_batches,), minval=0, maxval=2 * np.pi)
+#     #     # Rotation matrices
+#     #     c, s = tf.cos(theta), tf.sin(theta)
+#     #     cs0 = tf.zeros_like(c)
+#     #     cs1 = tf.ones_like(c)
+#     #     R = tf.stack([c, -s, cs0, s, c, cs0, cs0, cs0, cs1], axis=1)
+#     #     R = tf.reshape(R, (-1, 3, 3))
+#     #     # Create N x 3 x 3 rotation matrices to multiply with stacked_points
+#     #     stacked_rots = tf.gather(R, batch_inds)
+#     #     # Apply rotations
+#     #     stacked_points = tf.reshape(tf.matmul(tf.expand_dims(stacked_points, axis=1), stacked_rots), [-1, 3])
+#     # elif self.augment_rotation == 'arbitrarily':
+#     #     cs0 = tf.zeros((num_batches,))
+#     #     cs1 = tf.ones((num_batches,))
+#     #     # x rotation
+#     #     thetax = tf.random_uniform((num_batches,), minval=0, maxval=2 * np.pi)
+#     #     cx, sx = tf.cos(thetax), tf.sin(thetax)
+#     #     Rx = tf.stack([cs1, cs0, cs0, cs0, cx, -sx, cs0, sx, cx], axis=1)
+#     #     Rx = tf.reshape(Rx, (-1, 3, 3))
+#     #     # y rotation
+#     #     thetay = tf.random_uniform((num_batches,), minval=0, maxval=2 * np.pi)
+#     #     cy, sy = tf.cos(thetay), tf.sin(thetay)
+#     #     Ry = tf.stack([cy, cs0, -sy, cs0, cs1, cs0, sy, cs0, cy], axis=1)
+#     #     Ry = tf.reshape(Ry, (-1, 3, 3))
+#     #     # z rotation
+#     #     thetaz = tf.random_uniform((num_batches,), minval=0, maxval=2 * np.pi)
+#     #     cz, sz = tf.cos(thetaz), tf.sin(thetaz)
+#     #     Rz = tf.stack([cz, -sz, cs0, sz, cz, cs0, cs0, cs0, cs1], axis=1)
+#     #     Rz = tf.reshape(Rz, (-1, 3, 3))
+#     #     # whole rotation
+#     #     Rxy = tf.matmul(Rx, Ry)
+#     #     R = tf.matmul(Rxy, Rz)
+#     #     # Create N x 3 x 3 rotation matrices to multiply with stacked_points
+#     #     stacked_rots = tf.gather(R, batch_inds)
+#     #     # Apply rotations
+#     #     stacked_points = tf.reshape(tf.matmul(tf.expand_dims(stacked_points, axis=1), stacked_rots), [-1, 3])
+#     # else:
+#     #     raise ValueError('Unknown rotation augmentation : ' + self.augment_rotation)
+#     stacked_points = tf.reshape(stacked_points,(-1,3))
+#     theta = tf.random_uniform((num_batches,), minval=0, maxval=2 * np.pi)
+#     # Rotation matrices
+#     c, s = tf.cos(theta), tf.sin(theta)
+#     cs0 = tf.zeros_like(c)
+#     cs1 = tf.ones_like(c)
+#     R = tf.stack([c, -s, cs0, s, c, cs0, cs0, cs0, cs1], axis=1)
+#     R = tf.reshape(R, (-1, 3, 3))
+#     # Create N x 3 x 3 rotation matrices to multiply with stacked_points
+#     stacked_rots = tf.gather(R, batch_inds)
+#     # Apply rotations
+#     stacked_points = tf.reshape(tf.matmul(tf.expand_dims(stacked_points, axis=1), stacked_rots), [-1, 3])
+#     #######
+#     # Scale
+#     #######
+   
+#     # Choose random scales for each example
+#     min_s = augment_scale_min
+#     max_s = augment_scale_max
+#     # if self.augment_scale_anisotropic:
+#     #     s = tf.random_uniform((num_batches, 3), minval=min_s, maxval=max_s)
+#     # else:
+#     #     s = tf.random_uniform((num_batches, 1), minval=min_s, maxval=max_s)
+#     s = tf.random_uniform((num_batches, 3), minval=min_s, maxval=max_s)
+#     symmetries = []
+    
+#     for i in range(3):
+#         if augment_symmetries[i]:
+#             symmetries.append(tf.round(tf.random_uniform((num_batches, 1))) * 2 - 1)
+#         else:
+#             symmetries.append(tf.ones([num_batches, 1], dtype=tf.float32))
+#     s *= tf.concat(symmetries, 1)
+#     # Create N x 3 vector of scales to multiply with stacked_points
+#     stacked_scales = tf.gather(s, batch_inds)
+#     # Apply scales
+#     stacked_points = stacked_points * stacked_scales
+#     #######
+#     # Noise
+#     #######
+#     noise = tf.random_normal(tf.shape(stacked_points), stddev=augment_noise)
+#     stacked_points = stacked_points + noise
+#     # print("np.shape(stacked_points) last" )
+#     # print(np.shape(stacked_points)) 
+#     return stacked_points, s, R
+
+
+
+# def tf_get_batch_inds(stacks_len):
+#     """
+#     Method computing the batch indices of all points, given the batch element sizes (stack lengths). Example:
+#     From [3, 2, 5], it would return [0, 0, 0, 1, 1, 2, 2, 2, 2, 2]
+#     """
+
+#     # Initiate batch inds tensor
+#     num_batches = tf.shape(stacks_len)[0]
+#     print("num_batches")
+#     print(num_batches)
+#     num_points = tf.reduce_sum(stacks_len)
+#     batch_inds_0 = tf.zeros((num_points,), dtype=tf.int32)
+
+#     # Define body of the while loop
+#     def body(batch_i, point_i, b_inds):
+#         num_in = stacks_len[batch_i]
+#         # num_in = tf.reshape(num_in,())
+#         num_before = tf.cond(tf.less(batch_i, 1),
+#                                 lambda: tf.zeros((), dtype=tf.int32),
+#                                 lambda: tf.reduce_sum(stacks_len[:batch_i]))
+#         num_after = tf.cond(tf.less(batch_i, num_batches - 1),
+#                             lambda: tf.reduce_sum(stacks_len[batch_i + 1:]),
+#                             lambda: tf.zeros((), dtype=tf.int32))
+
+#         # Update current element indices
+#         inds_before = tf.zeros((num_before,), dtype=tf.int32)
+#         inds_in = tf.fill((num_in,), batch_i)
+#         inds_after = tf.zeros((num_after,), dtype=tf.int32)
+#         n_inds = tf.concat([inds_before, inds_in, inds_after], axis=0)
+
+#         b_inds += n_inds
+#         # Update indices
+#         point_i += stacks_len[batch_i]
+#         batch_i += 1
+
+#         return batch_i, point_i, b_inds
+
+#     def cond(batch_i, point_i, b_inds):
+#         return tf.less(batch_i, tf.shape(stacks_len)[0])
+
+#     _, _, batch_inds = tf.while_loop(cond,
+#                                         body,
+#                                         loop_vars=[0, 0, batch_inds_0],
+#                                         shape_invariants=[tf.TensorShape([]), tf.TensorShape([]),
+#                                                         tf.TensorShape([None])])
+
+#     return batch_inds
