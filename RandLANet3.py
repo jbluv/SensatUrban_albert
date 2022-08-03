@@ -17,6 +17,7 @@ class Network3:
     def __init__(self, dataset, config, restore_snap=None):
         flat_inputs = dataset.flat_inputs
         self.config = config
+        self.lr_ = config.learning_rate
         # Path of the result folder
         if self.config.saving:
             if self.config.saving_path is None:
@@ -37,6 +38,8 @@ class Network3:
             self.inputs['labels'] = flat_inputs[4 * num_layers + 1]
             self.inputs['input_inds'] = flat_inputs[4 * num_layers + 2]
             self.inputs['cloud_inds'] = flat_inputs[4 * num_layers + 3]
+            self.inputs['scales'] = flat_inputs[4 * num_layers + 4]
+            self.inputs['rots'] = flat_inputs[4 * num_layers + 5]
 
             self.labels = self.inputs['labels']
             self.is_training = tf.placeholder(tf.bool, shape=())
@@ -99,7 +102,7 @@ class Network3:
         self.train_writer = tf.summary.FileWriter(config.train_sum_dir, self.sess.graph)
         self.sess.run(tf.global_variables_initializer())
         cfg = config
-        structure = "# # # Runnnig RandLANet3 multihead: LocSE + scaled + LocSE + scaled"
+        structure = "# # # Runnnig RandLANet3 multihead: LocSE + scaled +  LocSE + scaled (xyz and color enhanced)"
         k_n = "k_n: "+str(cfg.k_n)
         num_layers = "num_layers: "+str(cfg.num_layers)
         num_points = "num_points: "+str(cfg.num_points)
@@ -110,14 +113,19 @@ class Network3:
         train_steps = "train_steps: "+str(cfg.train_steps)
         val_steps = "train_steps: "+str(cfg.val_steps)
         d_out = "d_out: "+str(cfg.d_out)
+        noise_init = "noise_init: "+str(cfg.noise_init)
+        max_epoch = "max_epoch: "+str(cfg.max_epoch)
+        learning_rate = "learning_rate: "+str(cfg.learning_rate)
         log_output = [structure, k_n, num_layers, num_points, num_classes, sub_grid_size,\
-                   batch_size, val_batch_size, train_steps, val_steps, d_out]
+                   batch_size, val_batch_size, train_steps, val_steps, d_out, noise_init, max_epoch, learning_rate]
         for i in log_output:
             log_out(str(i), self.Log_file)
             
         if restore_snap is not None:
             self.saver.restore(self.sess, restore_snap)
-            print("Model restored from " + restore_snap)
+            log_out("Model restored from " + restore_snap, self.Log_file)
+        else:
+            log_out("New model", self.Log_file)
 
     def inference(self, inputs, is_training):
 
@@ -205,10 +213,11 @@ class Network3:
                 self.training_epoch += 1
                 self.sess.run(dataset.train_init_op)
                 # Update learning rate
-                op = self.learning_rate.assign(tf.multiply(self.learning_rate,
-                                                           self.config.lr_decays[self.training_epoch]))
+                self.lr_ = self.lr_*self.config.lr_decays[self.training_epoch]
+                updated_lr = tf.multiply(self.learning_rate, self.config.lr_decays[self.training_epoch])
+                op = self.learning_rate.assign(updated_lr)
                 self.sess.run(op)
-                log_out('****EPOCH {}****'.format(self.training_epoch), self.Log_file)
+                log_out('****EPOCH {}**** loss:{}'.format(self.training_epoch, self.lr_), self.Log_file)
 
             except tf.errors.InvalidArgumentError as e:
 
@@ -319,7 +328,7 @@ class Network3:
                     # # ------------- transformer1 ------------- # #
         pt = multi_head()
         f_pt = pt.call(f_concat, d_out//2, name+ 'point_trans_1', is_training) 
-                    # # -------------             ------------- # #
+                    # -------------             ------------- # #
         # 
         # f_pc_agg = self.att_pooling(f_concat, d_out // 2, name + 'att_pooling_1', is_training)
         
@@ -407,47 +416,63 @@ class Network3:
         f_agg = tf_util.conv2d(f_agg, d_out, [1, 1], name + 'mlp', [1, 1], 'VALID', True, is_training)
         return f_agg
 
+class ScaledDotProductAttention():
+    def __init__(self, attn_dropout=0.1):
+        self.attn_dropout = attn_dropout
+    def forward(self, q, k, v, temperature):
+        # q, k, v -> [b, nsample, N, d]
+        # after transpose k -> [b, nsample, d, N]
+        attn = tf.matmul(q/ temperature, tf.transpose(k, perm=[0,1,3,2]))   
+        attn = tf.nn.softmax(attn, axis=-1)
+        attn = tf.nn.dropout(attn, rate = self.attn_dropout, seed = 1)
+        out = tf.matmul(attn,v)
+        return out, attn
 
 class multi_head():
 
     def __init__(self, **kwargs):
         self.initializer = tf.initializers.random_normal()
-
+        self.attention = ScaledDotProductAttention()
     def call(self, feature, d_out, name, is_training):
 
+        # # # # # # LocSE + scaled  # # # # #
         batch_size = tf.shape(feature)[0]
         num_points = tf.shape(feature)[1]
         num_neigh = tf.shape(feature)[2]
         d = feature.get_shape()[3].value
         
-        feature = tf.reshape(feature, [-1, num_neigh, d])
-
+        
+        # [b, N, nsample,d]
+        feature = tf.reshape(feature, [batch_size, num_points, num_neigh, d])
         residual = feature
-        # assert()
+
         q = tf.layers.dense(feature, d, activation=None, name=name +'fc_q')
         k = tf.layers.dense(feature, d, activation=None, name=name +'fc_k')
         v = tf.layers.dense(feature, d, activation=None, name=name +'fc_v')
-    
-        q_dk = q/d**0.5
+        
+        # [b, N, nsample, d]
+        q = tf.reshape(q, [batch_size, num_points, num_neigh, d])
+        k = tf.reshape(k, [batch_size, num_points, num_neigh, d])
+        v = tf.reshape(v, [batch_size, num_points, num_neigh, d])
+        
+        # [b, nsample, N, d]
+        q, k, v = tf.transpose(q, perm=[0,2,1,3]),tf.transpose(k, perm=[0,2,1,3]),tf.transpose(v, perm=[0,2,1,3])
+        out, attn = self.attention.forward(q, k, v, d**0.5)
 
-        # q_dk = tf.reshape(q_dk, [batch_size, num_points, num_neigh, d])
-        # k = tf.reshape(k, [batch_size, num_points, num_neigh, d])
-        # v = tf.reshape(v, [batch_size, num_points, num_neigh, d])
-        q_dk = tf.reshape(q_dk, [-1, num_neigh, d])
-        k = tf.reshape(k, [-1,  num_neigh, d])
-        v = tf.reshape(v, [-1,  num_neigh, d])
+        # [b, N, nsample, d]
+        out = tf.transpose(q, perm=[0,2,1,3])
+        out = tf.reshape(out, [batch_size, num_points, num_neigh, d])
 
-        attn = tf.matmul(q_dk, tf.transpose(k, perm=[0,2,1])) 
-        # attn = tf.matmul(q_dk, tf.transpose(k, perm=[0,1,3,2]))   
-        attn = tf.nn.softmax(attn, axis=1)
-        attn = tf.nn.dropout(attn, rate = 0.1, seed = 1)
-        out = tf.matmul(attn,v)
+        out = tf.layers.dense(out, d, activation=None, name=name +'fc_out')
+        out = tf.nn.dropout(out, rate = 0.1, seed = 1)
+
         out += residual
+
         out = tf.layers.batch_normalization(out, -1, 0.99, 1e-6, training=is_training)
         
-        out = tf.reduce_sum(out, axis=1)
-
-        # N * n * k_n * d
+        out = tf.math.reduce_sum(out, axis=-2)
+        # [b, N, 1, d]
         out = tf.reshape(out, [batch_size, num_points, 1, d])
         out = tf_util.conv2d(out, d_out, [1, 1], name + 'ml', [1, 1], 'VALID', True, is_training)
         return out
+
