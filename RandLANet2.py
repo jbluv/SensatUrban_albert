@@ -18,6 +18,7 @@ class Network2:
     def __init__(self, dataset, config, restore_snap=None):
         flat_inputs = dataset.flat_inputs
         self.config = config
+        self.lr_ = config.learning_rate
         # Path of the result folder
         if self.config.saving:
             if self.config.saving_path is None:
@@ -38,6 +39,8 @@ class Network2:
             self.inputs['labels'] = flat_inputs[4 * num_layers + 1]
             self.inputs['input_inds'] = flat_inputs[4 * num_layers + 2]
             self.inputs['cloud_inds'] = flat_inputs[4 * num_layers + 3]
+            self.inputs['scales'] = flat_inputs[4 * num_layers + 4]
+            self.inputs['rots'] = flat_inputs[4 * num_layers + 5]
 
             self.labels = self.inputs['labels']
             self.is_training = tf.placeholder(tf.bool, shape=())
@@ -99,7 +102,7 @@ class Network2:
         self.merged = tf.summary.merge_all()
         self.train_writer = tf.summary.FileWriter(config.train_sum_dir, self.sess.graph)
         self.sess.run(tf.global_variables_initializer())
-        structure = "# # # Runnnig RandLANet2 point trans: LocSE + point_transformer"
+        structure = "# # # Runnnig RandLANet2 point trans: LocSE + point_transformer (xyz and color enhanced) "
         cfg = config
         k_n = "k_n: "+str(cfg.k_n)
         num_layers = "num_layers: "+str(cfg.num_layers)
@@ -111,21 +114,19 @@ class Network2:
         train_steps = "train_steps: "+str(cfg.train_steps)
         val_steps = "train_steps: "+str(cfg.val_steps)
         d_out = "d_out: "+str(cfg.d_out)
+        noise_init = "noise_init: "+str(cfg.noise_init)
+        max_epoch = "max_epoch: "+str(cfg.max_epoch)
+        learning_rate = "learning_rate: "+str(cfg.learning_rate)
+        log_output = [structure, k_n, num_layers, num_points, num_classes, sub_grid_size,\
+                   batch_size, val_batch_size, train_steps, val_steps, d_out, noise_init, max_epoch, learning_rate]
+        for i in log_output:
+            log_out(str(i), self.Log_file)
 
-        print(structure)
-        print(k_n)
-        print(num_layers)
-        print(num_points)
-        print(num_classes)
-        print(sub_grid_size)
-        print(batch_size)
-        print(val_batch_size)
-        print(train_steps)
-        print(val_steps)
-        print(d_out)
         if restore_snap is not None:
             self.saver.restore(self.sess, restore_snap)
-            print("Model restored from " + restore_snap)
+            log_out("Model restored from " + restore_snap, self.Log_file)
+        else:
+            log_out("New model", self.Log_file)
 
     def inference(self, inputs, is_training):
 
@@ -213,10 +214,11 @@ class Network2:
                 self.training_epoch += 1
                 self.sess.run(dataset.train_init_op)
                 # Update learning rate
-                op = self.learning_rate.assign(tf.multiply(self.learning_rate,
-                                                           self.config.lr_decays[self.training_epoch]))
+                self.lr_ = self.lr_*self.config.lr_decays[self.training_epoch]
+                updated_lr = tf.multiply(self.learning_rate, self.config.lr_decays[self.training_epoch])
+                op = self.learning_rate.assign(updated_lr)
                 self.sess.run(op)
-                log_out('****EPOCH {}****'.format(self.training_epoch), self.Log_file)
+                log_out('****EPOCH {}**** loss:{}'.format(self.training_epoch, self.lr_), self.Log_file)
 
             except tf.errors.InvalidArgumentError as e:
 
@@ -318,7 +320,6 @@ class Network2:
         return tf.nn.leaky_relu(f_pc + shortcut)
 
 
-
     def building_block(self, xyz, feature, neigh_idx, d_out, name, is_training):
         # # # # # # -------------      round1       ------------- # # ## # # 
         d_in = feature.get_shape()[-1].value
@@ -327,22 +328,24 @@ class Network2:
         f_neighbors = self.gather_neighbour(tf.squeeze(feature, axis=2), neigh_idx)
         f_concat = tf.concat([f_neighbors, f_xyz], axis=-1)
                     # # ------------- transformer1 ------------- # #
-        # pt = point_transformer(dim=d_out,attn_hidden=d_out//2, pos_hidden=d_out)
-        # f_pt = pt.call(f_concat, f_xyz, d_out//2, name+ 'point_trans_1', is_training) 
+        # pt = point_transformer(dim=d_out)
+        # f_pt = pt.call(f_concat, f_neighbors, f_xyz, d_out//2, name+ 'point_trans_1', is_training) 
         # f_xyz as pos encoding 
                     # # -------------             ------------- # #
         # f_pc_agg = self.att_pooling(f_concat, d_out // 2, name + 'att_pooling_1', is_training)
         
+
         # # # # # # -------------      round2       ------------- # # # # # # 
 
         # f_xyz = tf_util.conv2d(f_xyz, d_out//2, [1, 1], name + 'mlp3', [1, 1], 'VALID', True, is_training)
-        # f_neighbours = self.gather_neighbour(tf.squeeze(f_pc_agg, axis=2), neigh_idx)
+        # f_neighbours = self.gather_neighbour(tf.squeeze(f_pt, axis=2), neigh_idx)
         # f_concat = tf.concat([f_neighbours, f_xyz], axis=-1)
 
                     # # ------------- transformer2 ------------- # #
 
         pt = point_transformer(dim=d_out)
-        f_pt = pt.call(f_concat, f_xyz, d_out, name+ 'point_trans_2', is_training)
+        f_pt = pt.call(f_concat, f_neighbors, f_xyz, d_out, name+ 'point_trans_2', is_training)
+        
                     # # -------------             ------------- # #
         # f_pc_agg = self.att_pooling(f_concat, d_out, name + 'att_pooling_2', is_training)
         return f_pt
@@ -425,12 +428,6 @@ class point_transformer():
 
         self.initializer = tf.initializers.random_normal()
     
-        self.linear1 = tf.layers.Dense(dim, activation='relu',
-                                             kernel_initializer=self.initializer,
-                                             name='self.linear1')
-        self.linear2 = tf.layers.Dense(dim, activation=None,
-                                             kernel_initializer=self.initializer,
-                                             name='self.linear2')
         self.MLP_attn1 = tf.layers.Dense(attn_hidden, activation='relu',
                                       kernel_initializer=self.initializer,
                                       name='attn_hidden')
@@ -453,39 +450,66 @@ class point_transformer():
                                          kernel_initializer=self.initializer,
                                          name='self.linear_value')
         self.norm = tf.keras.layers.LayerNormalization( epsilon=1e-6)
-
-    def call(self, feature, pos, d_out, name, is_training):
-        n = pos.shape[-2]
-        batch_size = tf.shape(feature)[0]
-        num_points = tf.shape(feature)[1]
-        num_neigh = tf.shape(feature)[2]
-        d = feature.get_shape()[3].value
+    def call(self,f_concat, f_neighbors, f_xyz, d_out, name, is_training):
+        batch_size = tf.shape(f_concat)[0]
+        num_points = tf.shape(f_concat)[1]
+        num_neigh = tf.shape(f_concat)[2]
+        d = f_concat.get_shape()[3].value
         
-        feature = tf.reshape(feature, [-1, num_neigh, d])
+        x_q = tf.reshape(f_neighbors, [-1,num_neigh,d//2])
+        x_q = tf.layers.dense(x_q, d, activation=None, name=name +'fc_q')
+        
+        print("x_q")
+        print(x_q)
+        x_k = tf.reshape(f_concat, [-1,num_neigh,d])
+        x_v = tf.reshape(f_neighbors, [-1,num_neigh,d//2])
+        x_k = tf.layers.dense(x_k, d, activation=None, name=name +'fc_k')
+        x_v = tf.layers.dense(x_v, d, activation=None, name=name +'fc_v')
+        
 
-        x = self.linear1(feature)
+        p_r = tf.reshape(f_xyz, [-1,num_neigh,d//2])
 
-        q = self.linear_query(x)
-        k = self.linear_key(x)
-        v = self.linear_value(x)
-
-
-        q = tf.reshape(q, [-1, num_neigh, d])
-        k = tf.reshape(k, [-1,  num_neigh, d])
-        v = tf.reshape(v, [-1,  num_neigh, d])
-
-        qk = q - k
-
-        pos_rel = pos 
-        pos_emb = self.MLP_pos1(pos_rel)
-        pos_emb = self.MLP_pos2(pos_emb)
-
-        mlp_attn1 = self.MLP_attn1(qk+ pos_emb)
-        attn = tf.nn.softmax(self.MLP_attn2(mlp_attn1), axis=1)
-        out = attn*(v+pos_emb)
-
-        out = tf.math.reduce_sum(out, axis=1)
+        p_r = self.MLP_pos1(p_r)
+        p_r = self.MLP_pos2(p_r)
+        w =  x_k - x_q
+        mlp_attn1 = self.MLP_attn1(w+ p_r)
+        attn = tf.nn.softmax(self.MLP_attn2(mlp_attn1), axis=-2)
+        out = (x_v+p_r) * attn
+        
+        out = tf.math.reduce_sum(out, axis=-2)
 
         out = tf.reshape(out, [batch_size, num_points, 1, d])
         out = tf_util.conv2d(out, d_out, [1, 1], name + 'ml', [1, 1], 'VALID', True, is_training)
         return out
+    # def call(self,f_concat, f_neighbors, f_xyz, d_out, name, is_training):
+    #      单层1
+    #     batch_size = tf.shape(f_concat)[0]
+    #     num_points = tf.shape(f_concat)[1]
+    #     num_neigh = tf.shape(f_concat)[2]
+    #     d = f_concat.get_shape()[3].value
+        
+    #     x_q = tf.reshape(f_neighbors, [-1,num_neigh,d//2])
+    #     x_q = tf.layers.dense(x_q, d, activation=None, name=name +'fc_q')
+        
+    #     print("x_q")
+    #     print(x_q)
+    #     x_k = tf.reshape(f_concat, [-1,num_neigh,d])
+    #     x_v = tf.reshape(f_neighbors, [-1,num_neigh,d//2])
+    #     x_k = tf.layers.dense(x_k, d, activation=None, name=name +'fc_k')
+    #     x_v = tf.layers.dense(x_v, d, activation=None, name=name +'fc_v')
+        
+
+    #     p_r = tf.reshape(f_xyz, [-1,num_neigh,d//2])
+
+    #     p_r = self.MLP_pos1(p_r)
+    #     p_r = self.MLP_pos2(p_r)
+    #     w =  x_k - x_q
+    #     mlp_attn1 = self.MLP_attn1(w+ p_r)
+    #     attn = tf.nn.softmax(self.MLP_attn2(mlp_attn1), axis=-2)
+    #     out = (x_v+p_r) * attn
+        
+    #     out = tf.math.reduce_sum(out, axis=-2)
+
+    #     out = tf.reshape(out, [batch_size, num_points, 1, d])
+    #     out = tf_util.conv2d(out, d_out, [1, 1], name + 'ml', [1, 1], 'VALID', True, is_training)
+    #     return out
