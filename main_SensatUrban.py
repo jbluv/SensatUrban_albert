@@ -2,6 +2,7 @@ from os.path import join, exists, dirname, abspath
 from RandLANet import Network
 from RandLANet2 import Network2
 from RandLANet3 import Network3
+from RandLANet2_lab import Network2New
 from tester_SensatUrban import ModelTester
 from helper_ply import read_ply
 from tool import ConfigSensatUrban as cfg
@@ -11,6 +12,7 @@ from tool import tf_augment_input
 import tensorflow as tf
 import numpy as np
 import time, pickle, argparse, glob, os, shutil
+
 
 
 class SensatUrban:
@@ -55,10 +57,16 @@ class SensatUrban:
     def load_sub_sampled_clouds(self, sub_grid_size):
         tree_path = join(self.path, 'grid_{:.3f}'.format(sub_grid_size))
         print(enumerate(self.all_files))
+
+        ######                  ######
+        ###### Testing     cfg  ######
+        ######                  ######
+        test = 0
+
         for i, file_path in enumerate(self.all_files):
             # # loader limit break
-            # if i>2:
-            #     break
+            if i>2 and test:
+                break
             t0 = time.time()
             cloud_name = file_path.split('/')[-1][:-4]
             if cloud_name in self.test_file_name:
@@ -98,8 +106,8 @@ class SensatUrban:
 
         for i, file_path in enumerate(self.all_files):
             # loader limit break
-            # if i>2:
-            #     break
+            if i>2 and test:
+                break
             t0 = time.time()
             cloud_name = file_path.split('/')[-1][:-4]
 
@@ -224,12 +232,9 @@ class SensatUrban:
                            np.array([cloud_idx], dtype=np.int32))
 
         gen_func = spatially_regular_gen
-        # gen_types = (tf.float32, tf.float32, tf.int32, tf.int32, tf.int32, tf.int32)
-        # gen_shapes = ([None, 3], [None, 3], [None], [None], [None], [None])
         gen_types = (tf.float32, tf.float32, tf.int32, tf.int32, tf.int32)
         gen_shapes = ([None, 3], [None, 3], [None], [None], [None])
         return gen_func, gen_types, gen_shapes
-
     @staticmethod
     def get_tf_mapping2():
 
@@ -244,19 +249,34 @@ class SensatUrban:
             # Augment input points
             # batch_inds = tf_get_batch_inds(stacks_lengths)
 
-            batch_inds = [cfg.num_points]
-            batch_xyz, scales, rots = tf_augment_input(batch_xyz, batch_inds)
-            batch_xyz = tf.reshape(batch_xyz,(cfg.batch_size,-1,3))  
+            ######                  ######
+            ###### Data enhancement ######
+            ######                  ######
+            enhance_xyz = 1
+            enhance_color = 1
+            if enhance_xyz:
+                original_xyz = batch_xyz
+                original_xyz = tf.reshape(original_xyz,(cfg.batch_size ,-1,3)) 
+                batch_inds = [cfg.num_points]
+                batch_xyz, scales, rots = tf_augment_input(batch_xyz, batch_inds)
+                feature_xyz =  tf.ones((tf.shape(batch_xyz)[0], 1), dtype=tf.float32)
+                feature_xyz = tf.reshape(feature_xyz,(cfg.batch_size ,-1,1)) 
+                batch_xyz = tf.reshape(batch_xyz,(cfg.batch_size ,-1,3)) 
 
-            # randomly drop colors
-            num_batches = batch_inds[-1] + 1
-            s = tf.cast(tf.less(tf.random_uniform((num_batches,)), augment_color), tf.float32)
-            stacked_s = tf.gather(s, batch_inds)
-            batch_features = batch_features * tf.expand_dims(stacked_s, axis=1)
+            
+            if enhance_color:
+                # randomly drop colors
+                num_batches = batch_inds[-1] + 1
+                s = tf.cast(tf.less(tf.random_uniform((num_batches,)), augment_color), tf.float32)
+                stacked_s = tf.gather(s, batch_inds)
+                batch_features = batch_features * tf.expand_dims(stacked_s, axis=1)
+                batch_features = tf.reshape(batch_features,(cfg.batch_size ,-1,3)) 
 
             # (N, 65536,6)
-            batch_features = tf.concat([batch_xyz, batch_features], axis=-1) 
-
+            # batch_features = tf.concat([batch_xyz, batch_features], axis=-1)
+            batch_features = tf.concat([feature_xyz, batch_features, original_xyz[:,:, 2:]], axis=-1)
+            print("batch_features after")
+            print(batch_features) 
             for i in range(cfg.num_layers):
                 neighbour_idx = tf.py_func(DP.knn_search, [batch_xyz, batch_xyz, cfg.k_n], tf.int32)
                 sub_points = batch_xyz[:,:tf.shape(batch_xyz)[1] // cfg.sub_sampling_ratio[i], :]
@@ -329,17 +349,14 @@ if __name__ == '__main__':
     dataset = SensatUrban()
     dataset.init_input_pipeline()
 
-    
     if Mode == 'train':
         # model = Network(dataset, cfg)
-        restore_snap = "/hy-tmp/SensatUrban_albert/result/Log_2022-07-26_15-38-47_SensatUrban/snapshots/snap-29251"
+        restore_snap = "/hy-tmp/SensatUrban_albert/result/LocSE+point_new_vertical/snapshots/snap-2001"
         # model = Network3(dataset, cfg, None)
         # model.train(dataset)
-
-        model = Network3(dataset, cfg, None)
+        model = Network2(dataset, cfg, restore_snap)
         model.train(dataset)
-        
-
+    
     elif Mode == 'test':
         cfg.saving = False
         model = Network(dataset, cfg)
@@ -385,3 +402,5 @@ if __name__ == '__main__':
                 with open("label_flat.pkl", 'wb') as f:
                     pickle.dump(label, f)
                 # Plot.draw_pc_sem_ins(xyz[0, :, :], label[0, :])
+                break
+        print("wrong mode!!!!!")
