@@ -26,14 +26,14 @@ class ConfigSensatUrban:
     batch_size = 4  # batch_size during training
     val_batch_size = 4  # batch_size during validation and test
     train_steps = 500  # Number of steps per epochs
-    val_steps = 100  # Number of validation steps per epoch
+    val_steps = 50  # Number of validation steps per epoch
 
     sub_sampling_ratio = [4, 4, 4, 4, 2]  # sampling ratio of random sampling at each layer
     d_out = [16, 64, 128, 256, 512]  # feature dimension for randlanet 
     # d_out = [8, 16, 32, 64, 128]  # feature dimension for point transformer
 
     noise_init = 3.5  # noise initial parameter
-    max_epoch = 50  # maximum epoch during training
+    max_epoch = 100  # maximum epoch during training
     learning_rate = 1e-2  # initial learning rate
     lr_decays = {i: 0.95 for i in range(0, 500)}  # decay rate of learning rate
 
@@ -287,7 +287,7 @@ def tf_augment_input(stacked_points, batch_inds):
     """
     Augment inputs with rotation, scale and noise
     """
-    rot_type = "arbitrary"
+    rot_type = "veritical"
     augment_scale_min = 0.7
     augment_scale_max = 1.3
     augment_symmetries = [True, False, False]
@@ -298,6 +298,7 @@ def tf_augment_input(stacked_points, batch_inds):
 
     # Rotation
     if rot_type == "veritical":
+        print("veritical rotation")
         stacked_points = tf.reshape(stacked_points,(-1,3))
         theta = tf.random_uniform((num_batches,), minval=0, maxval=2 * np.pi)
         # Rotation matrices
@@ -315,6 +316,7 @@ def tf_augment_input(stacked_points, batch_inds):
         stacked_points = tf.reshape(tf.matmul(tf.expand_dims(stacked_points, axis=1), stacked_rots), [-1, 3])
 
     elif rot_type == "arbitrary":
+        print("arbitrary rotation")
         cs0 = tf.zeros((num_batches,))
         cs1 = tf.ones((num_batches,))
         # x rotation
