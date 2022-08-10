@@ -2,7 +2,6 @@ from os.path import join, exists, dirname, abspath
 from RandLANet import Network
 from RandLANet2 import Network2
 from RandLANet3 import Network3
-from RandLANet2_lab import Network2New
 from tester_SensatUrban import ModelTester
 from helper_ply import read_ply
 from tool import ConfigSensatUrban as cfg
@@ -239,7 +238,7 @@ class SensatUrban:
     def get_tf_mapping2():
 
         def tf_map(batch_xyz, batch_features, batch_labels, batch_pc_idx, batch_cloud_idx):
-            augment_color = 0.8
+            
             input_points = []
             input_neighbors = []
             input_pools = []
@@ -253,28 +252,38 @@ class SensatUrban:
             ###### Data enhancement ######
             ######                  ######
             enhance_xyz = 1
-            enhance_color = 1
+            enhance_color = 0
+
+            rot_type = "veritical"
+            augment_scale_min = 0.9
+            augment_scale_max = 1.1
+            augment_symmetries = [True, False, False]
+            augment_noise= 0.001
+            augment_color = 0.8
+            
             if enhance_xyz:
                 original_xyz = batch_xyz
                 original_xyz = tf.reshape(original_xyz,(cfg.batch_size ,-1,3)) 
                 batch_inds = [cfg.num_points]
-                batch_xyz, scales, rots = tf_augment_input(batch_xyz, batch_inds)
+                batch_xyz, scales, rots = tf_augment_input(batch_xyz, batch_inds, rot_type, augment_scale_min, augment_scale_max, augment_symmetries, augment_noise)
                 feature_xyz =  tf.ones((tf.shape(batch_xyz)[0], 1), dtype=tf.float32)
                 feature_xyz = tf.reshape(feature_xyz,(cfg.batch_size ,-1,1)) 
                 batch_xyz = tf.reshape(batch_xyz,(cfg.batch_size ,-1,3)) 
-
             
             if enhance_color:
                 # randomly drop colors
                 num_batches = batch_inds[-1] + 1
                 s = tf.cast(tf.less(tf.random_uniform((num_batches,)), augment_color), tf.float32)
+
                 stacked_s = tf.gather(s, batch_inds)
                 batch_features = batch_features * tf.expand_dims(stacked_s, axis=1)
                 batch_features = tf.reshape(batch_features,(cfg.batch_size ,-1,3)) 
 
             # (N, 65536,6)
-            # batch_features = tf.concat([batch_xyz, batch_features], axis=-1)
-            batch_features = tf.concat([feature_xyz, batch_features, original_xyz[:,:, 2:]], axis=-1)
+            if enhance_xyz & enhance_color:
+                batch_features = tf.concat([feature_xyz, batch_features, original_xyz[:,:, 2:]], axis=-1)
+            else:
+                batch_features = tf.concat([batch_xyz, batch_features], axis=-1)
             print("batch_features after")
             print(batch_features) 
             for i in range(cfg.num_layers):
@@ -290,7 +299,8 @@ class SensatUrban:
             
             input_list = input_points + input_neighbors + input_pools + input_up_samples
             input_list += [batch_features, batch_labels, batch_pc_idx, batch_cloud_idx]
-            input_list += [scales, rots]
+            if enhance_xyz:
+                input_list += [scales, rots]
             return input_list
 
         return tf_map
@@ -351,10 +361,10 @@ if __name__ == '__main__':
 
     if Mode == 'train':
         # model = Network(dataset, cfg)
-        restore_snap = "/hy-tmp/SensatUrban_albert/result/LocSE+point_new_vertical/snapshots/snap-2001"
+        restore_snap = "/hy-tmp/SensatUrban_albert/result/ LocSE + att_pooling + LocSE + att_pooling augmentce loss 0.01/snapshots/snap-1501"
         # model = Network3(dataset, cfg, None)
         # model.train(dataset)
-        model = Network2(dataset, cfg, restore_snap)
+        model = Network(dataset, cfg, None)
         model.train(dataset)
     
     elif Mode == 'test':
