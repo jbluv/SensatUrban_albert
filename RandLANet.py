@@ -18,6 +18,12 @@ class Network:
     def __init__(self, dataset, config, restore_snap=None):
         flat_inputs = dataset.flat_inputs
         self.config = config
+        self.lr_ = config.learning_rate
+        self.loss_type = config.loss_type
+        self.loss_func = config.loss_func
+        self.reduction = config.reduction
+        self.gamma = config.gamma
+        self.activation_fn = config.activation_fn
         # Path of the result folder
         if self.config.saving:
             if self.config.saving_path is None:
@@ -46,7 +52,7 @@ class Network:
             self.correct_prediction = 0
             self.accuracy = 0
             self.mIou_list = [0]
-            self.loss_type = 'sqrt'  # wce, lovas
+            # sqrt or class balance weight
             self.class_weights = DP.get_class_weights(dataset.num_per_class, self.loss_type)
             self.T = time.strftime('_%Y-%m-%d_%H-%M-%S', time.gmtime())
             self.Log_file = open('log_train_' + dataset.name+ '_original' + self.T + '.txt', 'a')
@@ -75,7 +81,7 @@ class Network:
                 reducing_list = tf.concat([reducing_list[:ign_label], inserted_value, reducing_list[ign_label:]], 0)
             valid_labels = tf.gather(reducing_list, valid_labels_init)
 
-            self.loss = self.get_loss(valid_logits, valid_labels, self.class_weights)
+            self.loss = self.get_loss(valid_logits, valid_labels, self.class_weights, loss_type=self.loss_func)
 
         with tf.variable_scope('optimizer'):
             self.learning_rate = tf.Variable(config.learning_rate, trainable=False, name='learning_rate')
@@ -99,8 +105,13 @@ class Network:
         self.merged = tf.summary.merge_all()
         self.train_writer = tf.summary.FileWriter(config.train_sum_dir, self.sess.graph)
         self.sess.run(tf.global_variables_initializer())
-        structure = "Runnnig RandLANet: LocSE + att_pooling + LocSE + att_pooling"
+        
+        structure = "Runnnig RandLANet: LocSE + att_pooling + LocSE + att_pooling "+self.loss_type+" + "+self.loss_func
         cfg = config
+        cls_weights = "cls_weights: "+ str(self.class_weights)
+        loss = "loss: "+ str(self.loss_type)
+        loss_func = "loss_func: "+ str(self.loss_func)
+        reduction = "reduction: "+ str(self.reduction)
         k_n = "k_n: "+str(cfg.k_n)
         num_layers = "num_layers: "+str(cfg.num_layers)
         num_points = "num_points: "+str(cfg.num_points)
@@ -111,21 +122,20 @@ class Network:
         train_steps = "train_steps: "+str(cfg.train_steps)
         val_steps = "train_steps: "+str(cfg.val_steps)
         d_out = "d_out: "+str(cfg.d_out)
+        noise_init = "noise_init: "+str(cfg.noise_init)
+        max_epoch = "max_epoch: "+str(cfg.max_epoch)
+        learning_rate = "learning_rate: "+str(cfg.learning_rate)
+        log_output = [structure, cls_weights, loss, loss_func, reduction, k_n, num_layers, num_points, num_classes, sub_grid_size,\
+                   batch_size, val_batch_size, train_steps, val_steps, d_out, noise_init, max_epoch, learning_rate]
+        
+        for i in log_output:
+            log_out(str(i), self.Log_file)
 
-        print(structure)
-        print(k_n)
-        print(num_layers)
-        print(num_points)
-        print(num_classes)
-        print(sub_grid_size)
-        print(batch_size)
-        print(val_batch_size)
-        print(train_steps)
-        print(val_steps)
-        print(d_out)
         if restore_snap is not None:
             self.saver.restore(self.sess, restore_snap)
-            print("Model restored from " + restore_snap)
+            log_out("Model restored from " + restore_snap, self.Log_file)
+        else:
+            log_out("New model", self.Log_file)
 
     def inference(self, inputs, is_training):
 
@@ -216,10 +226,11 @@ class Network:
                 self.training_epoch += 1
                 self.sess.run(dataset.train_init_op)
                 # Update learning rate
-                op = self.learning_rate.assign(tf.multiply(self.learning_rate,
-                                                           self.config.lr_decays[self.training_epoch]))
+                self.lr_ = self.lr_*self.config.lr_decays[self.training_epoch]
+                updated_lr = tf.multiply(self.learning_rate, self.config.lr_decays[self.training_epoch])
+                op = self.learning_rate.assign(updated_lr)
                 self.sess.run(op)
-                log_out('****EPOCH {}****'.format(self.training_epoch), self.Log_file)
+                log_out('****EPOCH {}**** loss:{}'.format(self.training_epoch, self.lr_), self.Log_file)
 
             except tf.errors.InvalidArgumentError as e:
 
@@ -295,14 +306,38 @@ class Network:
         log_out('-' * len(s) + '\n', self.Log_file)
         return mean_iou
 
-    def get_loss(self, logits, labels, pre_cal_weights):
+    def get_loss(self, logits, labels, pre_cal_weights, loss_type="crossE"):
         # calculate the weighted cross entropy according to the inverse frequency
-        class_weights = tf.convert_to_tensor(pre_cal_weights, dtype=tf.float32)
-        one_hot_labels = tf.one_hot(labels, depth=self.config.num_classes)
-        weights = tf.reduce_sum(class_weights * one_hot_labels, axis=1)
-        unweighted_losses = tf.nn.softmax_cross_entropy_with_logits_v2(logits=logits, labels=one_hot_labels)
-        weighted_losses = unweighted_losses * weights
-        output_loss = tf.reduce_mean(weighted_losses)
+        if loss_type == "crossE":
+            class_weights = tf.convert_to_tensor(pre_cal_weights, dtype=tf.float32)
+            one_hot_labels = tf.one_hot(labels, depth=self.config.num_classes)
+            weights = tf.reduce_sum(class_weights * one_hot_labels, axis=1)
+            unweighted_losses = tf.nn.softmax_cross_entropy_with_logits_v2(logits=logits, labels=one_hot_labels)
+            weighted_losses = unweighted_losses * weights
+            output_loss = tf.reduce_mean(weighted_losses)
+        elif loss_type == "focalL":
+            
+            class_weights = tf.convert_to_tensor(pre_cal_weights, dtype=tf.float32)
+            logits = tf.cast(logits, dtype=tf.float32)
+            labels = tf.one_hot(labels, depth=self.config.num_classes)
+            cross_entropy = tf.nn.sigmoid_cross_entropy_with_logits(
+                labels=labels, logits=logits)
+
+            if gamma == 0.0:
+                modulator = 1.0
+            else:
+                modulator = tf.exp(-gamma * labels * logits - gamma * tf.log1p(
+                    tf.exp(-1.0 * logits)))
+            print("modulator")
+            print(modulator)
+            loss = modulator * cross_entropy
+            
+            weighted_loss = class_weights * loss
+            output_loss = tf.reduce_sum(weighted_loss)
+            # Normalize by the total number of positive samples.
+            output_loss /= tf.reduce_sum(labels)
+        else:
+            raise ValueError('Only support cross entropy and focal loss')
         return output_loss
 
     def dilated_res_block(self, feature, xyz, neigh_idx, d_out, name, is_training):
@@ -320,11 +355,14 @@ class Network:
         f_xyz = tf_util.conv2d(f_xyz, d_in, [1, 1], name + 'mlp1', [1, 1], 'VALID', True, is_training)
         f_neighbours = self.gather_neighbour(tf.squeeze(feature, axis=2), neigh_idx)
         f_concat = tf.concat([f_neighbours, f_xyz], axis=-1)
-        f_pc_agg = self.att_pooling(f_concat, d_out // 2, name + 'att_pooling_1', is_training)
+        f_pc_agg = self.att_pooling(neigh_idx, f_concat, d_out // 2, name + 'att_pooling_1', is_training, \
+            reduction = self.reduction, activation_fn = self.activation_fn)
+
         f_xyz = tf_util.conv2d(f_xyz, d_out // 2, [1, 1], name + 'mlp2', [1, 1], 'VALID', True, is_training)
         f_neighbours = self.gather_neighbour(tf.squeeze(f_pc_agg, axis=2), neigh_idx)
         f_concat = tf.concat([f_neighbours, f_xyz], axis=-1)
-        f_pc_agg = self.att_pooling(f_concat, d_out, name + 'att_pooling_2', is_training)
+        f_pc_agg = self.att_pooling(neigh_idx, f_concat, d_out, name + 'att_pooling_2', is_training, \
+            reduction = self.reduction, activation_fn = self.activation_fn)
         return f_pc_agg
 
     def relative_pos_encoding(self, xyz, neigh_idx):
@@ -379,7 +417,7 @@ class Network:
         return features
 
     @staticmethod
-    def att_pooling(feature_set, d_out, name, is_training):
+    def att_pooling(neighbor_idx, feature_set, d_out, name, is_training, reduction, bn = True, activation_fn = "relu"):
         batch_size = tf.shape(feature_set)[0]
         num_points = tf.shape(feature_set)[1]
         num_neigh = tf.shape(feature_set)[2]
@@ -388,7 +426,27 @@ class Network:
         att_activation = tf.layers.dense(f_reshaped, d, activation=None, use_bias=False, name=name + 'fc')
         att_scores = tf.nn.softmax(att_activation, axis=1)
         f_agg = f_reshaped * att_scores
-        f_agg = tf.reduce_sum(f_agg, axis=1)
+        # reduction method
+        if reduction=="sum":
+            f_agg = tf.reduce_sum(f_agg, axis=1)
+        elif reduction=="mean":
+            f_agg = tf.reduce_sum(f_agg, axis=1)
+            padding_num = tf.reduce_max(neighbor_idx)
+            neighbors_n = tf.where(tf.less(neighbor_idx, padding_num), tf.ones_like(neighbor_idx),
+                                   tf.zeros_like(neighbor_idx))
+            neighbors_n = tf.cast(neighbors_n, tf.float32)
+            neighbors_n = tf.reduce_sum(neighbors_n, -1, keep_dims=True) + 1e-5  # [n_points, 1]
+            neighbors_n = tf.reshape(neighbors_n, shape=[-1, 1])
+            f_agg = f_agg / neighbors_n
+        else:
+            raise ValueError('Only support sum and mean')
+        # normalization
+        if bn:
+            f_agg = tf.layers.batch_normalization(f_agg, -1, 0.99, 1e-6, training=is_training)
+        # activation_fn
+        if activation_fn == "relu":
+            f_agg = tf.nn.relu(f_agg)
+
         f_agg = tf.reshape(f_agg, [batch_size, num_points, 1, d])
         f_agg = tf_util.conv2d(f_agg, d_out, [1, 1], name + 'mlp', [1, 1], 'VALID', True, is_training)
         return f_agg
