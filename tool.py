@@ -34,12 +34,22 @@ class ConfigSensatUrban:
 
     noise_init = 3.5  # noise initial parameter
     max_epoch = 100  # maximum epoch during training
-    learning_rate = 1e-2  # initial learning rate
+    learning_rate = 5e-3  # initial learning rate
     lr_decays = {i: 0.95 for i in range(0, 500)}  # decay rate of learning rate
 
     train_sum_dir = 'train_log_SensatUrban'
     saving = True
     saving_path = None
+
+    loss_func = "crossE"
+    loss_type = 'balance'
+    
+    # pooling
+    reduction = "mean"
+    activation_fn = "relu"
+    # focal Loss
+    gamma = 0.2
+    
 
 
 class DataProcessing:
@@ -182,8 +192,15 @@ class DataProcessing:
             ce_label_weight = 1 / np.sqrt(frequency)
         elif name == 'wce':
             ce_label_weight = 1 / (frequency + 0.02)
+        elif name == 'balance':
+            beta, num_cls = 1e-13, 13
+            effective_num = 1.0 - np.power(beta, frequency)
+            weights = (1.0 - beta) / np.array(effective_num)
+            ce_label_weight = weights / np.sum(weights) * num_cls
+            ce_label_weight = ce_label_weight
+            # ce_label_weight = weights 
         else:
-            raise ValueError('Only support sqrt and wce')
+            raise ValueError('Only support sqrt and wce and balance')
         return np.expand_dims(ce_label_weight, axis=0)
 
 
@@ -283,15 +300,11 @@ class Plot:
         return
 
 
-def tf_augment_input(stacked_points, batch_inds):
+def tf_augment_input(stacked_points, batch_inds, rot_type, augment_scale_min, augment_scale_max, augment_symmetries, augment_noise):
     """
     Augment inputs with rotation, scale and noise
     """
-    rot_type = "veritical"
-    augment_scale_min = 0.7
-    augment_scale_max = 1.3
-    augment_symmetries = [True, False, False]
-    augment_noise= 0.001
+
     
     # Parameter
     num_batches = batch_inds[-1] + 1
@@ -308,7 +321,9 @@ def tf_augment_input(stacked_points, batch_inds):
         # c -s  0
         # s  c  0
         # 0  0  1
-        R = tf.stack([c, -s, cs0, s, c, cs0, cs0, cs0, cs1], axis=1)
+        R = tf.stack([c, -s, cs0, \
+                      s,  c,  cs0, \
+                      cs0, cs0, cs1], axis=1)
         R = tf.reshape(R, (-1, 3, 3))
         # Create N x 3 x 3 rotation matrices to multiply with stacked_points
         stacked_rots = tf.gather(R, batch_inds)
@@ -362,6 +377,7 @@ def tf_augment_input(stacked_points, batch_inds):
     # Apply scales
     stacked_points = stacked_points * stacked_scales
     # Noise
+    # 
     noise = tf.random_normal(tf.shape(stacked_points), stddev=augment_noise)
     stacked_points = stacked_points + noise
     return stacked_points, s, R
