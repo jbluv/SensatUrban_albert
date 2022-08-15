@@ -98,19 +98,21 @@ class Network:
             tf.summary.scalar('accuracy', self.accuracy)
 
         my_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES)
-        self.saver = tf.train.Saver(my_vars, max_to_keep=1)
+        self.saver = tf.train.Saver(my_vars, max_to_keep=6)
         c_proto = tf.ConfigProto()
         c_proto.gpu_options.allow_growth = True
         self.sess = tf.Session(config=c_proto)
         self.merged = tf.summary.merge_all()
         self.train_writer = tf.summary.FileWriter(config.train_sum_dir, self.sess.graph)
         self.sess.run(tf.global_variables_initializer())
-        
-        structure = "Runnnig RandLANet: LocSE + att_pooling + LocSE + att_pooling "+self.loss_type+" + "+self.loss_func
+
         cfg = config
+        structure = "Runnnig RandLANet: LocSE + att_pooling + LocSE + att_pooling "+self.loss_type+" + "+self.loss_func 
+        structure += " + xyz: "+str(cfg.enhance_xyz)+" + color: "+str(cfg.enhance_color)
         cls_weights = "cls_weights: "+ str(self.class_weights)
         loss = "loss: "+ str(self.loss_type)
         loss_func = "loss_func: "+ str(self.loss_func)
+        gamma = "gamma(focalL): "+ str(self.gamma)
         reduction = "reduction: "+ str(self.reduction)
         k_n = "k_n: "+str(cfg.k_n)
         num_layers = "num_layers: "+str(cfg.num_layers)
@@ -125,12 +127,33 @@ class Network:
         noise_init = "noise_init: "+str(cfg.noise_init)
         max_epoch = "max_epoch: "+str(cfg.max_epoch)
         learning_rate = "learning_rate: "+str(cfg.learning_rate)
-        log_output = [structure, cls_weights, loss, loss_func, reduction, k_n, num_layers, num_points, num_classes, sub_grid_size,\
+        log_output = [structure, cls_weights, loss, loss_func, gamma, reduction, k_n, num_layers, num_points, num_classes, sub_grid_size,\
                    batch_size, val_batch_size, train_steps, val_steps, d_out, noise_init, max_epoch, learning_rate]
-        
+        # data augmentation
+        enhance_xyz = "enhance_xyz: "+str(cfg.enhance_xyz)
+        enhance_color =  "enhance_color: "+str(cfg.enhance_color)
+        # enhancing pos info
+        rot_type = "rot_type: "+str(cfg.rot_type)
+        augment_scale_min = "augment_scale_min: "+str(cfg.augment_scale_min)
+        augment_scale_max = "augment_scale_max: "+str(cfg.augment_scale_max)
+        augment_symmetries = "augment_symmetries: "+str(cfg.augment_symmetries)
+        augment_noise= "augment_noise: "+str(cfg.augment_noise)
+
+        # dropping color
+        drop_color = "drop_color: "+str(cfg.drop_color)
+        augment_color = "augment_color: "+str(cfg.augment_color)
+        # color Jitter
+        jitter_color =  "jitter_color: "+str(cfg.jitter_color)
+        # autocontrast
+        auto_contrast = "auto_contrast: "+str(cfg.auto_contrast)
+        blend_factor= "blend_factor: "+str(cfg.blend_factor)
+        temp = "------------ Data Augmentation ------------"
+        aug_output = [temp, enhance_xyz, enhance_color, rot_type, augment_scale_min,augment_scale_max, augment_symmetries,
+                        augment_noise, drop_color, augment_color, jitter_color, auto_contrast, blend_factor]
         for i in log_output:
             log_out(str(i), self.Log_file)
-
+        for i in aug_output:
+            log_out(str(i), self.Log_file)
         if restore_snap is not None:
             self.saver.restore(self.sess, restore_snap)
             log_out("Model restored from " + restore_snap, self.Log_file)
@@ -203,7 +226,7 @@ class Network:
                 print(self.training_step)
                 print(t_end - t_start)
                 if self.training_step % 50 == 0:
-                    message = 'Step {:08d} L_out={:5.3f} Acc={:4.2f} ''---{:8.2f} ms/batch'
+                    message = 'Step {:08d} L_out={:6.4f} Acc={:4.2f} ''---{:8.2f} ms/batch'
                     log_out(message.format(self.training_step, l_out, acc, 1000 * (t_end - t_start)), self.Log_file)
                 self.training_step += 1
 
@@ -215,13 +238,13 @@ class Network:
                         # Save the best model
                         snapshot_directory = join(self.saving_path, 'snapshots')
                         makedirs(snapshot_directory) if not exists(snapshot_directory) else None
-                        self.saver.save(self.sess, snapshot_directory + '/snap', global_step=self.training_step)
+                        self.saver.save(self.sess, snapshot_directory + '/snap-('+str(round(m_iou,2))+"%)", global_step=self.training_step)
                     self.mIou_list.append(m_iou)
                     log_out('Best m_IoU of {} is: {:5.3f}'.format(dataset.name, max(self.mIou_list)), self.Log_file)
-                else:
-                    snapshot_directory = join(self.saving_path, 'snapshots')
-                    makedirs(snapshot_directory) if not exists(snapshot_directory) else None
-                    self.saver.save(self.sess, snapshot_directory + '/snap', self.training_step)
+                # else:
+                #     snapshot_directory = join(self.saving_path, 'snapshots')
+                #     makedirs(snapshot_directory) if not exists(snapshot_directory) else None
+                #     self.saver.save(self.sess, snapshot_directory + '/snap', self.training_step)
 
                 self.training_epoch += 1
                 self.sess.run(dataset.train_init_op)
@@ -306,7 +329,7 @@ class Network:
         log_out('-' * len(s) + '\n', self.Log_file)
         return mean_iou
 
-    def get_loss(self, logits, labels, pre_cal_weights, loss_type="crossE"):
+    def get_loss(self, logits, labels, pre_cal_weights, loss_type="crossE", focal_Stable=False):
         # calculate the weighted cross entropy according to the inverse frequency
         if loss_type == "crossE":
             class_weights = tf.convert_to_tensor(pre_cal_weights, dtype=tf.float32)
@@ -316,28 +339,73 @@ class Network:
             weighted_losses = unweighted_losses * weights
             output_loss = tf.reduce_mean(weighted_losses)
         elif loss_type == "focalL":
+            # gamma = self.gamma
+            # class_weights = tf.convert_to_tensor(pre_cal_weights, dtype=tf.float32)
+            # logits = tf.cast(logits, dtype=tf.float32)
+            # labels = tf.one_hot(labels, depth=self.config.num_classes)
+            # cross_entropy = tf.nn.sigmoid_cross_entropy_with_logits(
+            #     labels=labels, logits=logits)
+
+            # if not focal_Stable:
+            #     positive_label_mask = tf.equal(labels, 1.0)
+            #     probs = tf.sigmoid(logits)
+            #     probs_gt = tf.where(positive_label_mask, probs, 1.0 - probs)
+            #     # # With gamma < 1, the implementation could produce NaN during back prop.
+            #     modulator = tf.pow(1.0 - probs_gt, gamma)
+            # else:
+            #     if gamma == 0.0:
+            #         modulator = 1.0
+            #     else:
+            #         modulator = tf.exp(-gamma * labels * logits - gamma * tf.log1p(
+            #             tf.exp(-1.0 * logits)))
+
+            # loss = modulator * cross_entropy
             
+            # weighted_loss = class_weights * loss
+            # output_loss = tf.reduce_sum(weighted_loss)
+            # # Normalize by the total number of positive samples.
+            # output_loss /= tf.reduce_sum(labels)
+
+            n = tf.shape(logits)[0]
+            gamma = self.gamma
+            alpha = 0.5
+            batch_average =True
+
             class_weights = tf.convert_to_tensor(pre_cal_weights, dtype=tf.float32)
+            one_hot_labels = tf.one_hot(labels, depth=self.config.num_classes)
+            weights = tf.reduce_sum(class_weights * one_hot_labels, axis=1)
+            weights = tf.expand_dims(weights,1)
             logits = tf.cast(logits, dtype=tf.float32)
             labels = tf.one_hot(labels, depth=self.config.num_classes)
-            cross_entropy = tf.nn.sigmoid_cross_entropy_with_logits(
-                labels=labels, logits=logits)
-
-            if gamma == 0.0:
-                modulator = 1.0
-            else:
-                modulator = tf.exp(-gamma * labels * logits - gamma * tf.log1p(
-                    tf.exp(-1.0 * logits)))
-            print("modulator")
-            print(modulator)
-            loss = modulator * cross_entropy
             
-            weighted_loss = class_weights * loss
-            output_loss = tf.reduce_sum(weighted_loss)
+            logpt = -tf.compat.v1.losses.sigmoid_cross_entropy(
+                multi_class_labels = labels,
+                logits=logits,
+                weights=weights
+            )
+
+            pt = tf.math.exp(logpt)
+
+            if alpha is not None:
+                logpt *= alpha
+
+            output_loss = -((1 - pt) ** gamma) * logpt
+
+            if batch_average:
+                output_loss /= self.config.batch_size
+
+        elif loss_type=="sigmoid":
+            class_weights = tf.convert_to_tensor(pre_cal_weights, dtype=tf.float32)
+            one_hot_labels = tf.one_hot(labels, depth=self.config.num_classes)
+            weights = tf.reduce_sum(class_weights * one_hot_labels, axis=1)
+            unweighted_losses = tf.nn.sigmoid_cross_entropy_with_logits(
+                    labels=one_hot_labels, logits=logits)
+            weights = tf.expand_dims(weights, axis=1)
+            weighted_losses = unweighted_losses * weights
             # Normalize by the total number of positive samples.
-            output_loss /= tf.reduce_sum(labels)
+            output_loss = tf.reduce_sum(weighted_losses) / tf.reduce_sum(one_hot_labels)
         else:
-            raise ValueError('Only support cross entropy and focal loss')
+            raise ValueError('Only support softmax cross entropy and focal loss and sigmoid')
         return output_loss
 
     def dilated_res_block(self, feature, xyz, neigh_idx, d_out, name, is_training):
@@ -365,11 +433,15 @@ class Network:
             reduction = self.reduction, activation_fn = self.activation_fn)
         return f_pc_agg
 
-    def relative_pos_encoding(self, xyz, neigh_idx):
+    def relative_pos_encoding(self, xyz, neigh_idx, manhatton=False):
         neighbor_xyz = self.gather_neighbour(xyz, neigh_idx)
         xyz_tile = tf.tile(tf.expand_dims(xyz, axis=2), [1, 1, tf.shape(neigh_idx)[-1], 1])
         relative_xyz = xyz_tile - neighbor_xyz
         relative_dis = tf.sqrt(tf.reduce_sum(tf.square(relative_xyz), axis=-1, keepdims=True))
+        if manhatton:
+            manhatton_dis = tf.reduce_sum(tf.math.abs(relative_xyz), axis=-1, keepdims=True)
+            relative_feature = tf.concat([manhatton_dis, relative_dis, relative_xyz, xyz_tile, neighbor_xyz], axis=-1)
+            return relative_feature
         relative_feature = tf.concat([relative_dis, relative_xyz, xyz_tile, neighbor_xyz], axis=-1)
         return relative_feature
 
