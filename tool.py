@@ -34,21 +34,40 @@ class ConfigSensatUrban:
 
     noise_init = 3.5  # noise initial parameter
     max_epoch = 100  # maximum epoch during training
-    learning_rate = 5e-3  # initial learning rate
+    learning_rate = 1e-2  # initial learning rate
     lr_decays = {i: 0.95 for i in range(0, 500)}  # decay rate of learning rate
 
     train_sum_dir = 'train_log_SensatUrban'
     saving = True
     saving_path = None
-
-    loss_func = "crossE"
-    loss_type = 'balance'
+    # loss function and loss weight
+    loss_func = "crossE" # crossE sigmoid and focalL
+    loss_type = 'sqrt' # sqrt balance 
     
     # pooling
     reduction = "mean"
     activation_fn = "relu"
     # focal Loss
-    gamma = 0.2
+    gamma = 1.0
+
+    # data augmentation
+    enhance_xyz = False
+    enhance_color = True
+    # enhancing pos info
+    rot_type = "veritical"
+    augment_scale_min = 0.6
+    augment_scale_max = 1.4
+    augment_symmetries = [True, False, False]
+    augment_noise= 0.005
+
+    # dropping color
+    drop_color = True
+    augment_color = 0.2
+    # color Jitter
+    jitter_color = False
+    # autocontrast
+    auto_contrast = False
+    blend_factor=0.5
     
 
 
@@ -185,7 +204,7 @@ class DataProcessing:
             return points[idx], features[idx], labels[idx]
 
     @staticmethod
-    def get_class_weights(num_per_class, name='sqrt'):
+    def get_class_weights(num_per_class, name='sqrt', rebalance_weight=True):
         # # pre-calculate the number of points in each category
         frequency = num_per_class / float(sum(num_per_class))
         if name == 'sqrt' or name == 'lovas':
@@ -193,11 +212,18 @@ class DataProcessing:
         elif name == 'wce':
             ce_label_weight = 1 / (frequency + 0.02)
         elif name == 'balance':
-            beta, num_cls = 1e-13, 13
+            beta, num_cls = 1e-15, 13
             effective_num = 1.0 - np.power(beta, frequency)
             weights = (1.0 - beta) / np.array(effective_num)
             ce_label_weight = weights / np.sum(weights) * num_cls
-            ce_label_weight = ce_label_weight
+            
+            
+            if rebalance_weight:
+                for count, weight in enumerate(ce_label_weight):
+                    if count == 3:
+                        ce_label_weight[count] = ce_label_weight[count]*1.5
+                    elif count in [5, 7, 8, 9, 10]:
+                        ce_label_weight[count] = ce_label_weight[count]*2.0
             # ce_label_weight = weights 
         else:
             raise ValueError('Only support sqrt and wce and balance')
