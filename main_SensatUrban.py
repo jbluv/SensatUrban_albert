@@ -52,6 +52,25 @@ class SensatUrban:
         self.load_sub_sampled_clouds(cfg.sub_grid_size)
         for ignore_label in self.ignored_labels:
             self.num_per_class = np.delete(self.num_per_class, ignore_label)
+        # data augmentation
+                    
+        self.enhance_xyz = cfg.enhance_xyz
+        self.enhance_color = cfg.enhance_color
+        # enhancing pos info
+        self.rot_type = cfg.rot_type
+        self.augment_scale_min = cfg.augment_scale_min
+        self.augment_scale_max = cfg.augment_scale_max
+        self.augment_symmetries = cfg.augment_symmetries
+        self.augment_noise= cfg.augment_noise
+
+        # dropping color
+        self.drop_color = cfg.drop_color
+        self.augment_color = cfg.augment_color
+        # color Jitter
+        self.jitter_color = cfg.jitter_color
+        # autocontrast
+        self.auto_contrast = cfg.auto_contrast
+        self.blend_factor= cfg.blend_factor
 
     def load_sub_sampled_clouds(self, sub_grid_size):
         tree_path = join(self.path, 'grid_{:.3f}'.format(sub_grid_size))
@@ -211,16 +230,7 @@ class SensatUrban:
                     pl_list += [input_labels]
                     pi_list += [input_inds]
                     ci_list += [cloud_ind]
-             
-                # print("input_points.shape")
-                # print(np.shape(input_points))
-                # print("p_list.shape")
-                # print(np.shape(p_list))
-                # print("np.concatenate(p_list, axis=0)")
-                # print(np.concatenate(p_list, axis=0).shape)
-                # print("np.array([tp.shape[0] for tp in p_list])")
-                # print(np.array([tp.shape[0] for tp in p_list]))
-                # print("-------")
+
                 batch_n += n
 
                 if True:
@@ -246,42 +256,58 @@ class SensatUrban:
             # stacks_lengths = tf.reshape(stacks_lengths,(-1,))
             # Get batch indice for each point
             # Augment input points
-            # batch_inds = tf_get_batch_inds(stacks_lengths)
 
             ######                  ######
             ###### Data enhancement ######
             ######                  ######
-            enhance_xyz = 1
-            enhance_color = 0
-
-            rot_type = "veritical"
-            augment_scale_min = 0.9
-            augment_scale_max = 1.1
-            augment_symmetries = [True, False, False]
-            augment_noise= 0.001
-            augment_color = 0.8
-            
-            if enhance_xyz:
+            batch_inds = [cfg.num_points]
+            if cfg.enhance_xyz:
                 original_xyz = batch_xyz
                 original_xyz = tf.reshape(original_xyz,(cfg.batch_size ,-1,3)) 
                 batch_inds = [cfg.num_points]
-                batch_xyz, scales, rots = tf_augment_input(batch_xyz, batch_inds, rot_type, augment_scale_min, augment_scale_max, augment_symmetries, augment_noise)
+                batch_xyz, scales, rots = tf_augment_input(batch_xyz, batch_inds, cfg.rot_type,\
+                    cfg.augment_scale_min, cfg.augment_scale_max, cfg.augment_symmetries, cfg.augment_noise)
                 feature_xyz =  tf.ones((tf.shape(batch_xyz)[0], 1), dtype=tf.float32)
                 feature_xyz = tf.reshape(feature_xyz,(cfg.batch_size ,-1,1)) 
                 batch_xyz = tf.reshape(batch_xyz,(cfg.batch_size ,-1,3)) 
             
-            if enhance_color:
-                # randomly drop colors
-                num_batches = batch_inds[-1] + 1
-                s = tf.cast(tf.less(tf.random_uniform((num_batches,)), augment_color), tf.float32)
+            if cfg.enhance_color:
+                if cfg.auto_contrast:
+                    # to avoid chromatic drop problems
+                    if np.random.rand() < 0.2:
+                        batch_features = tf.reshape(batch_features,(-1,3)) 
+                        lo = tf.math.reduce_min(batch_features, axis=1, keepdims=True)[0]
+                        hi = tf.math.reduce_max(batch_features, axis=1, keepdims=True)[0]
+                        scale = 255 / (hi - lo)
+                        contrast_feats = (batch_features - lo) * scale
+                        batch_features = (1 - cfg.blend_factor) * batch_features + cfg.blend_factor * contrast_feats
+                        batch_features = tf.reshape(batch_features,(cfg.batch_size ,-1,3))
+                        
+                if cfg.jitter_color:
+                    p=0.95
+                    std=0.005
+                    batch_features = tf.reshape(batch_features,(-1,3)) 
+                    if np.random.rand() < p:
+                        noise = np.random.randn(cfg.batch_size*cfg.num_points, 3)
+                        noise *= std * 255
+                        batch_features = tf.clip_by_value(batch_features, clip_value_min=0, clip_value_max=255) 
+                    batch_features = tf.reshape(batch_features,(cfg.batch_size ,-1,3))
 
-                stacked_s = tf.gather(s, batch_inds)
-                batch_features = batch_features * tf.expand_dims(stacked_s, axis=1)
-                batch_features = tf.reshape(batch_features,(cfg.batch_size ,-1,3)) 
+
+                if cfg.drop_color:
+                    # randomly drop colors
+                    num_batches = batch_inds[-1] + 1
+                    s = tf.cast(tf.less(tf.random_uniform((num_batches,)), cfg.augment_color), tf.float32)
+
+                    stacked_s = tf.gather(s, batch_inds)
+                    batch_features = batch_features * tf.expand_dims(stacked_s, axis=1)
+                    batch_features = tf.reshape(batch_features,(cfg.batch_size ,-1,3)) 
+                
 
             # (N, 65536,6)
-            if enhance_xyz & enhance_color:
-                batch_features = tf.concat([feature_xyz, batch_features, original_xyz[:,:, 2:]], axis=-1)
+            if cfg.enhance_xyz & cfg.enhance_color & cfg.drop_color:
+                # batch_features = tf.concat([feature_xyz, batch_features, original_xyz[:,:, 2:]], axis=-1)
+                batch_features = tf.concat([batch_xyz, batch_features], axis=-1)
             else:
                 batch_features = tf.concat([batch_xyz, batch_features], axis=-1)
             print("batch_features after")
@@ -299,7 +325,7 @@ class SensatUrban:
             
             input_list = input_points + input_neighbors + input_pools + input_up_samples
             input_list += [batch_features, batch_labels, batch_pc_idx, batch_cloud_idx]
-            if enhance_xyz:
+            if cfg.enhance_xyz:
                 input_list += [scales, rots]
             return input_list
 
@@ -361,7 +387,7 @@ if __name__ == '__main__':
 
     if Mode == 'train':
         # model = Network(dataset, cfg)
-        restore_snap = "/hy-tmp/SensatUrban_albert/result/ LocSE + att_pooling + LocSE + att_pooling augmentce loss 0.01/snapshots/snap-1501"
+        restore_snap = "/hy-tmp/SensatUrban_albert/result/LocSE + att_pooling + LocSE + att_pooling sqrt + crossE + xyz: True lager scale/noise/snapshots/snap-(19.95%)-1501"
         # model = Network3(dataset, cfg, None)
         # model.train(dataset)
         model = Network(dataset, cfg, None)
