@@ -97,7 +97,7 @@ class Network2:
             tf.summary.scalar('accuracy', self.accuracy)
 
         my_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES)
-        self.saver = tf.train.Saver(my_vars, max_to_keep=1)
+        self.saver = tf.train.Saver(my_vars, max_to_keep=6)
         c_proto = tf.ConfigProto()
         c_proto.gpu_options.allow_growth = True
         self.sess = tf.Session(config=c_proto)
@@ -109,7 +109,11 @@ class Network2:
         structure += " + xyz: "+str(cfg.enhance_xyz)+" + color: "+str(cfg.enhance_color)
         cls_weights = "cls_weights: "+ str(self.class_weights)
         loss = "loss: "+ str(self.loss_type)
+        loss_func = "loss_func: "+ str(self.loss_func)
+        gamma = "gamma(focalL): "+ str(self.gamma)
+        reduction = "reduction: "+ str(self.reduction)
         k_n = "k_n: "+str(cfg.k_n)
+        rgb_only = "rgb_only: "+ str(cfg.rgb_only)
         num_layers = "num_layers: "+str(cfg.num_layers)
         num_points = "num_points: "+str(cfg.num_points)
         num_classes = "num_classes: "+str(cfg.num_classes)
@@ -122,16 +126,42 @@ class Network2:
         noise_init = "noise_init: "+str(cfg.noise_init)
         max_epoch = "max_epoch: "+str(cfg.max_epoch)
         learning_rate = "learning_rate: "+str(cfg.learning_rate)
-        log_output = [structure, cls_weights, loss, k_n, num_layers, num_points, num_classes, sub_grid_size,\
+        log_output = [structure, cls_weights, rgb_only, loss, loss_func, gamma, reduction, k_n, num_layers, num_points, num_classes, sub_grid_size,\
                    batch_size, val_batch_size, train_steps, val_steps, d_out, noise_init, max_epoch, learning_rate]
+        # data augmentation
+        enhance_xyz = "enhance_xyz: "+str(cfg.enhance_xyz)
+        enhance_color =  "enhance_color: "+str(cfg.enhance_color)
+        # enhancing pos info
+        rot_type = "rot_type: "+str(cfg.rot_type)
+        augment_scale_min = "augment_scale_min: "+str(cfg.augment_scale_min)
+        augment_scale_max = "augment_scale_max: "+str(cfg.augment_scale_max)
+        augment_symmetries = "augment_symmetries: "+str(cfg.augment_symmetries)
+        augment_noise= "augment_noise: "+str(cfg.augment_noise)
+
+        # dropping color
+        drop_color = "drop_color: "+str(cfg.drop_color)
+        augment_color = "augment_color: "+str(cfg.augment_color)
+        # color Jitter
+        jitter_color =  "jitter_color: "+str(cfg.jitter_color)
+        # autocontrast
+        auto_contrast = "auto_contrast: "+str(cfg.auto_contrast)
+        blend_factor = "blend_factor: "+str(cfg.blend_factor)
+
+        translate_color = "translate_color: "+str(cfg.translate_color)
+        temp = "------------ Data Augmentation ------------"
+        aug_output = [temp, enhance_xyz, enhance_color, rot_type, augment_scale_min,augment_scale_max, augment_symmetries,
+                        augment_noise, drop_color, augment_color, jitter_color, auto_contrast, blend_factor, translate_color]
         for i in log_output:
             log_out(str(i), self.Log_file)
-
+        for i in aug_output:
+            log_out(str(i), self.Log_file)
         if restore_snap is not None:
             self.saver.restore(self.sess, restore_snap)
             log_out("Model restored from " + restore_snap, self.Log_file)
         else:
             log_out("New model", self.Log_file)
+
+
 
     def inference(self, inputs, is_training):
 
@@ -208,13 +238,13 @@ class Network2:
                         # Save the best model
                         snapshot_directory = join(self.saving_path, 'snapshots')
                         makedirs(snapshot_directory) if not exists(snapshot_directory) else None
-                        self.saver.save(self.sess, snapshot_directory + '/snap', global_step=self.training_step)
+                        self.saver.save(self.sess, snapshot_directory + '/snap-('+str(round(m_iou,2))+"%)", global_step=self.training_step)
                     self.mIou_list.append(m_iou)
                     log_out('Best m_IoU of {} is: {:5.3f}'.format(dataset.name, max(self.mIou_list)), self.Log_file)
-                else:
-                    snapshot_directory = join(self.saving_path, 'snapshots')
-                    makedirs(snapshot_directory) if not exists(snapshot_directory) else None
-                    self.saver.save(self.sess, snapshot_directory + '/snap', self.training_step)
+                # else:
+                #     snapshot_directory = join(self.saving_path, 'snapshots')
+                #     makedirs(snapshot_directory) if not exists(snapshot_directory) else None
+                #     self.saver.save(self.sess, snapshot_directory + '/snap', self.training_step)
 
                 self.training_epoch += 1
                 self.sess.run(dataset.train_init_op)
@@ -331,7 +361,7 @@ class Network2:
         d_in = feature.get_shape()[-1].value
         # f_xyz = self.relative_pos_encoding(xyz, neigh_idx)
         # f_xyz = tf_util.conv2d(f_xyz, d_in, [1, 1], name + 'mlp1', [1, 1], 'VALID', True, is_training)
-        f_neighbors = self.gather_neighbour(tf.squeeze(feature, axis=2), neigh_idx)
+        # f_neighbors = self.gather_neighbour(tf.squeeze(feature, axis=2), neigh_idx)
         # f_concat = tf.concat([f_neighbors, f_xyz], axis=-1)
                     # # ------------- transformer1 ------------- # #
         # pt = point_transformer(dim=d_out)
@@ -349,7 +379,7 @@ class Network2:
 
                     # # ------------- transformer2 ------------- # #
 
-        pt = point_transformer(dim=d_out)
+        pt = point_transformer(reduction = self.reduction, activation_fn = self.activation_fn)
         # f_pt = pt.call(f_neighbors,xyz, f_xyz, d_out, name+ 'point_trans_2', is_training)
         f_pt = pt.call(feature, xyz, neigh_idx, d_out, name+ 'point_trans_2', is_training)
         
@@ -431,8 +461,11 @@ class Network2:
 
 class point_transformer():
 
-    def __init__(self, dim=None, attn_hidden=4, pos_hidden=8, **kwargs):
+    def __init__(self, reduction, bn=True, activation_fn = "relu"):
         self.initializer = tf.initializers.random_normal()
+        self.reduction = reduction
+        self.bn = bn
+        self.activation_fn = "relu"
     def call(self, feature, pos, neigh_idx, d_out, name, is_training):
         n = pos.shape[-2]
         batch_size = tf.shape(feature)[0]
@@ -448,7 +481,7 @@ class point_transformer():
         x_q = x_q
         x_k = self.gather_neighbour(tf.squeeze(x_k, axis=2), neigh_idx)
         x_v = self.gather_neighbour(tf.squeeze(x_v, axis=2), neigh_idx)
-
+        # part of the LocSE
         neighbor_xyz = self.gather_neighbour(pos, neigh_idx)
         xyz_tile = tf.tile(tf.expand_dims(pos, axis=2), [1, 1, tf.shape(neigh_idx)[-1], 1])
         pos_enc = xyz_tile - neighbor_xyz
@@ -467,10 +500,33 @@ class point_transformer():
         attn = tf.nn.softmax(gamma, axis=-2)
 
         out =  attn * (x_v+pos_enc)
-        out = tf.math.reduce_sum(out, axis=-2)
+
+        if self.reduction=="sum":
+            out = tf.math.reduce_sum(out, axis=-2)
+            out = tf.reshape(out, [-1, d])
+        elif self.reduction=="mean":
+            out = tf.math.reduce_sum(out, axis=-2)
+            out = tf.reshape(out, [-1, d])
+            padding_num = tf.reduce_max(neigh_idx)
+            neighbors_n = tf.where(tf.less(neigh_idx, padding_num), tf.ones_like(neigh_idx),
+                                   tf.zeros_like(neigh_idx))
+            neighbors_n = tf.cast(neighbors_n, tf.float32)
+            neighbors_n = tf.reduce_sum(neighbors_n, -1, keep_dims=True) + 1e-5  # [n_points, 1]
+            neighbors_n = tf.reshape(neighbors_n, shape=[-1, 1])
+            out = out / neighbors_n
+        else:
+            raise ValueError('Only support sum and mean')
+
+        # if self.bn:
+        #     out = tf.layers.batch_normalization(out, -1, 0.99, 1e-6, training=is_training)
+        # # activation_fn
+        # if self.activation_fn == "relu":
+        #     out = tf.nn.relu(out)
+
         out = tf.reshape(out, [batch_size, num_points, 1, d])
         out = tf_util.conv2d(out, d_out, [1, 1], name + 'ml', [1, 1], 'VALID', True, is_training)
         return out
+
     @staticmethod
     def gather_neighbour(pc, neighbor_idx):
         # gather the coordinates or features of neighboring points
@@ -479,9 +535,5 @@ class point_transformer():
         d = pc.get_shape()[2].value
         index_input = tf.reshape(neighbor_idx, shape=[batch_size, -1])
         features = tf.batch_gather(pc, index_input)
-        print("pc.get_shape()")
-        print(pc.get_shape())
-        print("features.get_shape()")
-        print(features.get_shape())
         features = tf.reshape(features, [batch_size, num_points, tf.shape(neighbor_idx)[-1], d])
         return features
