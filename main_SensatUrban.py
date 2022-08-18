@@ -261,41 +261,51 @@ class SensatUrban:
             ###### Data enhancement ######
             ######                  ######
             batch_inds = [cfg.num_points]
+            print("batch_xyz")
+            print(batch_xyz)
+            print("batch_features")
+            print(batch_features)
             if cfg.enhance_xyz:
-                original_xyz = batch_xyz
-                original_xyz = tf.reshape(original_xyz,(cfg.batch_size ,-1,3)) 
                 batch_inds = [cfg.num_points]
+                batch_xyz = tf.reshape(batch_xyz,(-1,3))
                 batch_xyz, scales, rots = tf_augment_input(batch_xyz, batch_inds, cfg.rot_type,\
                     cfg.augment_scale_min, cfg.augment_scale_max, cfg.augment_symmetries, cfg.augment_noise)
-                feature_xyz =  tf.ones((tf.shape(batch_xyz)[0], 1), dtype=tf.float32)
-                feature_xyz = tf.reshape(feature_xyz,(cfg.batch_size ,-1,1)) 
                 batch_xyz = tf.reshape(batch_xyz,(cfg.batch_size ,-1,3)) 
             
             if cfg.enhance_color:
+                rbg_range = 1  # 255
                 if cfg.auto_contrast:
                     # to avoid chromatic drop problems
-                    if np.random.rand() < 0.2:
-                        batch_features = tf.reshape(batch_features,(-1,3)) 
-                        lo = tf.math.reduce_min(batch_features, axis=1, keepdims=True)[0]
-                        hi = tf.math.reduce_max(batch_features, axis=1, keepdims=True)[0]
-                        scale = 255 / (hi - lo)
+                    batch_features = tf.reshape(batch_features,(-1,3)) 
+                    if np.random.rand() < 0.2:   
+                        lo = tf.math.reduce_min(batch_features, axis=0, keepdims=True)
+                        hi = tf.math.reduce_max(batch_features, axis=0, keepdims=True)
+                        scale = rbg_range / (hi - lo)
                         contrast_feats = (batch_features - lo) * scale
                         batch_features = (1 - cfg.blend_factor) * batch_features + cfg.blend_factor * contrast_feats
-                        batch_features = tf.reshape(batch_features,(cfg.batch_size ,-1,3))
-                        
+                    batch_features = tf.reshape(batch_features,(cfg.batch_size ,-1,3))
+                
                 if cfg.jitter_color:
                     p=0.95
-                    std=0.005
+                    std=0.01
                     batch_features = tf.reshape(batch_features,(-1,3)) 
                     if np.random.rand() < p:
                         noise = np.random.randn(cfg.batch_size*cfg.num_points, 3)
-                        noise *= std * 255
-                        batch_features = tf.clip_by_value(batch_features, clip_value_min=0, clip_value_max=255) 
+                        noise *= std * rbg_range
+                        batch_features = tf.clip_by_value(noise + batch_features, clip_value_min=0, clip_value_max=rbg_range) 
                     batch_features = tf.reshape(batch_features,(cfg.batch_size ,-1,3))
 
-
+                if cfg.translate_color:
+                    trans_range_ratio = 0.95
+                    batch_features = tf.reshape(batch_features,(-1,3))
+                    if np.random.rand() < trans_range_ratio:
+                        tr = np.random.randn(1, 3) * rbg_range * 2 * trans_range_ratio
+                        batch_features = tf.clip_by_value(tr + batch_features, clip_value_min=0, clip_value_max=rbg_range) 
+                    batch_features = tf.reshape(batch_features,(cfg.batch_size ,-1,3))  
+                    
                 if cfg.drop_color:
                     # randomly drop colors
+                    batch_features = tf.reshape(batch_features,(-1,3)) 
                     num_batches = batch_inds[-1] + 1
                     s = tf.cast(tf.less(tf.random_uniform((num_batches,)), cfg.augment_color), tf.float32)
 
@@ -305,9 +315,9 @@ class SensatUrban:
                 
 
             # (N, 65536,6)
-            if cfg.enhance_xyz & cfg.enhance_color & cfg.drop_color:
-                # batch_features = tf.concat([feature_xyz, batch_features, original_xyz[:,:, 2:]], axis=-1)
-                batch_features = tf.concat([batch_xyz, batch_features], axis=-1)
+            
+            if cfg.rgb_only:
+                batch_features = batch_features
             else:
                 batch_features = tf.concat([batch_xyz, batch_features], axis=-1)
             print("batch_features after")
@@ -325,11 +335,37 @@ class SensatUrban:
             
             input_list = input_points + input_neighbors + input_pools + input_up_samples
             input_list += [batch_features, batch_labels, batch_pc_idx, batch_cloud_idx]
-            if cfg.enhance_xyz:
-                input_list += [scales, rots]
+            # if cfg.enhance_xyz:
+            #     input_list += [scales, rots]
             return input_list
+        def tf_map_test_val(batch_xyz, batch_features, batch_labels, batch_pc_idx, batch_cloud_idx):
+                
+            input_points = []
+            input_neighbors = []
+            input_pools = []
+            input_up_samples = []
 
-        return tf_map
+            # (N, 65536,6)
+            if cfg.rgb_only:
+                batch_features = batch_features
+            else:
+                batch_features = tf.concat([batch_xyz, batch_features], axis=-1)
+
+            for i in range(cfg.num_layers):
+                neighbour_idx = tf.py_func(DP.knn_search, [batch_xyz, batch_xyz, cfg.k_n], tf.int32)
+                sub_points = batch_xyz[:,:tf.shape(batch_xyz)[1] // cfg.sub_sampling_ratio[i], :]
+                pool_i = neighbour_idx[:,:tf.shape(batch_xyz)[1] // cfg.sub_sampling_ratio[i], :]
+                up_i = tf.py_func(DP.knn_search, [sub_points, batch_xyz, 1], tf.int32)
+                input_points.append(batch_xyz)
+                input_neighbors.append(neighbour_idx)
+                input_pools.append(pool_i)
+                input_up_samples.append(up_i)
+                batch_xyz = sub_points
+            
+            input_list = input_points + input_neighbors + input_pools + input_up_samples
+            input_list += [batch_features, batch_labels, batch_pc_idx, batch_cloud_idx]
+            return input_list
+        return tf_map, tf_map_test_val
 
     def init_input_pipeline(self):
         print('Initiating input pipelines')
@@ -344,11 +380,12 @@ class SensatUrban:
         self.batch_train_data = self.train_data.batch(cfg.batch_size)
         self.batch_val_data = self.val_data.batch(cfg.val_batch_size)
         self.batch_test_data = self.test_data.batch(cfg.val_batch_size)
-        map_func = self.get_tf_mapping2()
+
+        map_func, map_func_test = self.get_tf_mapping2()
 
         self.batch_train_data = self.batch_train_data.map(map_func=map_func)
-        self.batch_val_data = self.batch_val_data.map(map_func=map_func)
-        self.batch_test_data = self.batch_test_data.map(map_func=map_func)
+        self.batch_val_data = self.batch_val_data.map(map_func=map_func_test)
+        self.batch_test_data = self.batch_test_data.map(map_func=map_func_test)
 
         self.batch_train_data = self.batch_train_data.prefetch(cfg.batch_size)
         self.batch_val_data = self.batch_val_data.prefetch(cfg.val_batch_size)
@@ -387,22 +424,22 @@ if __name__ == '__main__':
 
     if Mode == 'train':
         # model = Network(dataset, cfg)
-        restore_snap = "/hy-tmp/SensatUrban_albert/result/LocSE + att_pooling + LocSE + att_pooling sqrt + crossE + xyz: True lager scale/noise/snapshots/snap-(19.95%)-1501"
+        restore_snap = "/hy-tmp/SensatUrban_albert/result/Point-transformer:  sqrt + crossE + xyz: False + color: False 0.01/snapshots/snap-(42.69%)-15501"
         # model = Network3(dataset, cfg, None)
         # model.train(dataset)
-        model = Network(dataset, cfg, None)
+        model = Network2(dataset, cfg, restore_snap)
         model.train(dataset)
     
     elif Mode == 'test':
         cfg.saving = False
-        model = Network(dataset, cfg)
+        model = Network2(dataset, cfg)
         chosen_snapshot = -1
         logs = np.sort([os.path.join('results', f) for f in os.listdir('results') if f.startswith('Log')])
         chosen_folder = logs[-1]
         snap_path = join(chosen_folder, 'snapshots')
         snap_steps = [int(f[:-5].split('-')[-1]) for f in os.listdir(snap_path) if f[-5:] == '.meta']
         chosen_step = np.sort(snap_steps)[-1]
-        chosen_snap = os.path.join(snap_path, 'snap-{:d}'.format(chosen_step))
+        chosen_snap = os.path.join(snap_path, 'snap-(51.49%)-{:d}'.format(chosen_step))
         tester = ModelTester(model, dataset, restore_snap=chosen_snap)
         tester.test(model, dataset)
         shutil.rmtree('train_log') if exists('train_log') else None
