@@ -115,6 +115,7 @@ class Network:
         gamma = "gamma(focalL): "+ str(self.gamma)
         reduction = "reduction: "+ str(self.reduction)
         k_n = "k_n: "+str(cfg.k_n)
+        rgb_only = "rgb_only: "+ str(cfg.rgb_only)
         num_layers = "num_layers: "+str(cfg.num_layers)
         num_points = "num_points: "+str(cfg.num_points)
         num_classes = "num_classes: "+str(cfg.num_classes)
@@ -127,7 +128,7 @@ class Network:
         noise_init = "noise_init: "+str(cfg.noise_init)
         max_epoch = "max_epoch: "+str(cfg.max_epoch)
         learning_rate = "learning_rate: "+str(cfg.learning_rate)
-        log_output = [structure, cls_weights, loss, loss_func, gamma, reduction, k_n, num_layers, num_points, num_classes, sub_grid_size,\
+        log_output = [structure, cls_weights, rgb_only, loss, loss_func, gamma, reduction, k_n, num_layers, num_points, num_classes, sub_grid_size,\
                    batch_size, val_batch_size, train_steps, val_steps, d_out, noise_init, max_epoch, learning_rate]
         # data augmentation
         enhance_xyz = "enhance_xyz: "+str(cfg.enhance_xyz)
@@ -146,10 +147,12 @@ class Network:
         jitter_color =  "jitter_color: "+str(cfg.jitter_color)
         # autocontrast
         auto_contrast = "auto_contrast: "+str(cfg.auto_contrast)
-        blend_factor= "blend_factor: "+str(cfg.blend_factor)
+        blend_factor = "blend_factor: "+str(cfg.blend_factor)
+
+        translate_color = "translate_color: "+str(cfg.translate_color)
         temp = "------------ Data Augmentation ------------"
         aug_output = [temp, enhance_xyz, enhance_color, rot_type, augment_scale_min,augment_scale_max, augment_symmetries,
-                        augment_noise, drop_color, augment_color, jitter_color, auto_contrast, blend_factor]
+                        augment_noise, drop_color, augment_color, jitter_color, auto_contrast, blend_factor, translate_color]
         for i in log_output:
             log_out(str(i), self.Log_file)
         for i in aug_output:
@@ -509,6 +512,7 @@ class Network:
             neighbors_n = tf.cast(neighbors_n, tf.float32)
             neighbors_n = tf.reduce_sum(neighbors_n, -1, keep_dims=True) + 1e-5  # [n_points, 1]
             neighbors_n = tf.reshape(neighbors_n, shape=[-1, 1])
+
             f_agg = f_agg / neighbors_n
         else:
             raise ValueError('Only support sum and mean')
