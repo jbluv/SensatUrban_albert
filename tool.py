@@ -29,12 +29,11 @@ class ConfigSensatUrban:
     val_steps = 50  # Number of validation steps per epoch
 
     sub_sampling_ratio = [4, 4, 4, 4, 2]  # sampling ratio of random sampling at each layer
-    d_out = [16, 64, 128, 256, 512]  # feature dimension for randlanet 
-    # d_out = [8, 16, 32, 64, 128]  # feature dimension for point transformer
+    d_out = [16, 64, 128, 256, 512]  # feature dimension
 
     noise_init = 3.5  # noise initial parameter
     max_epoch = 100  # maximum epoch during training
-    learning_rate = 1e-2  # initial learning rate
+    learning_rate = 0.0005345746329947881 # initial learning rate
     lr_decays = {i: 0.95 for i in range(0, 500)}  # decay rate of learning rate
 
     train_sum_dir = 'train_log_SensatUrban'
@@ -43,31 +42,35 @@ class ConfigSensatUrban:
     # loss function and loss weight
     loss_func = "crossE" # crossE sigmoid and focalL
     loss_type = 'sqrt' # sqrt balance 
-    
-    # pooling
-    reduction = "mean"
-    activation_fn = "relu"
     # focal Loss
     gamma = 1.0
-
+    # pooling
+    reduction = "mean" # sum and mean
+    activation_fn = "relu"
+    # xyz concat color or pure color as feature
+    rgb_only = False 
+    
     # data augmentation
     enhance_xyz = False
-    enhance_color = True
+    enhance_color = False
     # enhancing pos info
-    rot_type = "veritical"
-    augment_scale_min = 0.6
-    augment_scale_max = 1.4
+    rot_type = "vertical"
+    augment_scale_min = 0.7
+    augment_scale_max = 1.3
     augment_symmetries = [True, False, False]
-    augment_noise= 0.005
+    augment_noise= 0.001
 
     # dropping color
     drop_color = True
-    augment_color = 0.2
+    augment_color = 0.8
     # color Jitter
-    jitter_color = False
+    jitter_color = True
     # autocontrast
     auto_contrast = False
-    blend_factor=0.5
+    blend_factor= 0.5
+    # Adds a small translation vector to features
+    translate_color = False
+    
     
 
 
@@ -334,11 +337,11 @@ def tf_augment_input(stacked_points, batch_inds, rot_type, augment_scale_min, au
     
     # Parameter
     num_batches = batch_inds[-1] + 1
-
+    
     # Rotation
-    if rot_type == "veritical":
+    if rot_type == "vertical":
         print("veritical rotation")
-        stacked_points = tf.reshape(stacked_points,(-1,3))
+        
         theta = tf.random_uniform((num_batches,), minval=0, maxval=2 * np.pi)
         # Rotation matrices
         c, s = tf.cos(theta), tf.sin(theta)
@@ -383,7 +386,7 @@ def tf_augment_input(stacked_points, batch_inds, rot_type, augment_scale_min, au
         # Apply rotations
         stacked_points = tf.reshape(tf.matmul(tf.expand_dims(stacked_points, axis=1), stacked_rots), [-1, 3])
     else:
-        raise ValueError('Unknown rotation augmentation : ' + self.augment_rotation)
+        raise ValueError('Unknown rotation augmentation : ' + rot_type)
     # Scale
    
     # Choose random scales for each example
