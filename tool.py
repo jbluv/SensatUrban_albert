@@ -23,8 +23,8 @@ class ConfigSensatUrban:
     num_classes = 13  # Number of valid classes
     sub_grid_size = 0.2  # preprocess_parameter
 
-    batch_size = 4  # batch_size during training
-    val_batch_size = 4  # batch_size during validation and test
+    batch_size = 8  # batch_size during training
+    val_batch_size = 8  # batch_size during validation and test
     train_steps = 500  # Number of steps per epochs
     val_steps = 50  # Number of validation steps per epoch
 
@@ -33,7 +33,7 @@ class ConfigSensatUrban:
 
     noise_init = 3.5  # noise initial parameter
     max_epoch = 100  # maximum epoch during training
-    learning_rate = 0.0005345746329947881 # initial learning rate
+    learning_rate = 1e-3 # initial learning rate
     lr_decays = {i: 0.95 for i in range(0, 500)}  # decay rate of learning rate
 
     train_sum_dir = 'train_log_SensatUrban'
@@ -64,7 +64,7 @@ class ConfigSensatUrban:
     drop_color = True
     augment_color = 0.8
     # color Jitter
-    jitter_color = True
+    jitter_color = False
     # autocontrast
     auto_contrast = False
     blend_factor= 0.5
@@ -83,7 +83,7 @@ class DataProcessing:
         val_list, counts = np.unique(labels, return_counts=True)
         for idx, val in enumerate(val_list):
             num_pts_per_class[val] += counts[idx]
-        # for idx, nums in enumerate(num_pts_per_class):
+        # for idx, numsneighboring in enumerate(num_pts_per_class):
         #     print(idx, ':', nums)
         return num_pts_per_class
 
@@ -337,12 +337,12 @@ def tf_augment_input(stacked_points, batch_inds, rot_type, augment_scale_min, au
     
     # Parameter
     num_batches = batch_inds[-1] + 1
-    
+    rotation_range = 0.25 * np.pi # 2 * np.pi
     # Rotation
     if rot_type == "vertical":
         print("veritical rotation")
         
-        theta = tf.random_uniform((num_batches,), minval=0, maxval=2 * np.pi)
+        theta = tf.random_uniform((num_batches,), minval=0, maxval=rotation_range)
         # Rotation matrices
         c, s = tf.cos(theta), tf.sin(theta)
         cs0 = tf.zeros_like(c)
@@ -364,17 +364,17 @@ def tf_augment_input(stacked_points, batch_inds, rot_type, augment_scale_min, au
         cs0 = tf.zeros((num_batches,))
         cs1 = tf.ones((num_batches,))
         # x rotation
-        thetax = tf.random_uniform((num_batches,), minval=0, maxval=2 * np.pi)
+        thetax = tf.random_uniform((num_batches,), minval=0, maxval=rotation_range)
         cx, sx = tf.cos(thetax), tf.sin(thetax)
         Rx = tf.stack([cs1, cs0, cs0, cs0, cx, -sx, cs0, sx, cx], axis=1)
         Rx = tf.reshape(Rx, (-1, 3, 3))
         # y rotation
-        thetay = tf.random_uniform((num_batches,), minval=0, maxval=2 * np.pi)
+        thetay = tf.random_uniform((num_batches,), minval=0, maxval=rotation_range)
         cy, sy = tf.cos(thetay), tf.sin(thetay)
         Ry = tf.stack([cy, cs0, -sy, cs0, cs1, cs0, sy, cs0, cy], axis=1)
         Ry = tf.reshape(Ry, (-1, 3, 3))
         # z rotation
-        thetaz = tf.random_uniform((num_batches,), minval=0, maxval=2 * np.pi)
+        thetaz = tf.random_uniform((num_batches,), minval=0, maxval=rotation_range)
         cz, sz = tf.cos(thetaz), tf.sin(thetaz)
         Rz = tf.stack([cz, -sz, cs0, sz, cz, cs0, cs0, cs0, cs1], axis=1)
         Rz = tf.reshape(Rz, (-1, 3, 3))
