@@ -499,6 +499,8 @@ class point_transformer():
         gamma = gamma / np.sqrt(d)
         attn = tf.nn.softmax(gamma, axis=-2)
 
+        if self.bn:
+            attn = tf.layers.batch_normalization(attn, -1, 0.99, 1e-6, training=is_training)
         out =  attn * (x_v+pos_enc)
 
         if self.reduction=="sum":
@@ -519,7 +521,7 @@ class point_transformer():
 
         # if self.bn:
         #     out = tf.layers.batch_normalization(out, -1, 0.99, 1e-6, training=is_training)
-        # # activation_fn
+        # activation_fn
         # if self.activation_fn == "relu":
         #     out = tf.nn.relu(out)
 
