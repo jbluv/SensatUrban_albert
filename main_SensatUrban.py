@@ -424,10 +424,10 @@ if __name__ == '__main__':
 
     if Mode == 'train':
         # model = Network(dataset, cfg)
-        restore_snap = "/hy-tmp/SensatUrban_albert/result/Point-transformer:  sqrt + crossE + xyz: False + color: False 0.01/snapshots/snap-(42.69%)-15501"
+        restore_snap = "/hy-tmp/SensatUrban_albert/result/Point-transformer:  sqrt + crossE + xyz: True + color: False/snapshots/snap-(47.14%)-12501"
         # model = Network3(dataset, cfg, None)
         # model.train(dataset)
-        model = Network2(dataset, cfg, restore_snap)
+        model = Network2(dataset, cfg, None)
         model.train(dataset)
     
     elif Mode == 'test':
