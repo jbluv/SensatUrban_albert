@@ -332,7 +332,7 @@ class Network:
         log_out('-' * len(s) + '\n', self.Log_file)
         return mean_iou
 
-    def get_loss(self, logits, labels, pre_cal_weights, loss_type="crossE", focal_Stable=False):
+    def get_loss(self, logits, labels, pre_cal_weights, loss_type="crossE"):
         # calculate the weighted cross entropy according to the inverse frequency
         if loss_type == "crossE":
             class_weights = tf.convert_to_tensor(pre_cal_weights, dtype=tf.float32)
@@ -342,61 +342,27 @@ class Network:
             weighted_losses = unweighted_losses * weights
             output_loss = tf.reduce_mean(weighted_losses)
         elif loss_type == "focalL":
-            # gamma = self.gamma
-            # class_weights = tf.convert_to_tensor(pre_cal_weights, dtype=tf.float32)
-            # logits = tf.cast(logits, dtype=tf.float32)
-            # labels = tf.one_hot(labels, depth=self.config.num_classes)
-            # cross_entropy = tf.nn.sigmoid_cross_entropy_with_logits(
-            #     labels=labels, logits=logits)
-
-            # if not focal_Stable:
-            #     positive_label_mask = tf.equal(labels, 1.0)
-            #     probs = tf.sigmoid(logits)
-            #     probs_gt = tf.where(positive_label_mask, probs, 1.0 - probs)
-            #     # # With gamma < 1, the implementation could produce NaN during back prop.
-            #     modulator = tf.pow(1.0 - probs_gt, gamma)
-            # else:
-            #     if gamma == 0.0:
-            #         modulator = 1.0
-            #     else:
-            #         modulator = tf.exp(-gamma * labels * logits - gamma * tf.log1p(
-            #             tf.exp(-1.0 * logits)))
-
-            # loss = modulator * cross_entropy
-            
-            # weighted_loss = class_weights * loss
-            # output_loss = tf.reduce_sum(weighted_loss)
-            # # Normalize by the total number of positive samples.
-            # output_loss /= tf.reduce_sum(labels)
 
             n = tf.shape(logits)[0]
             gamma = self.gamma
             alpha = 0.5
-            batch_average =True
-
             class_weights = tf.convert_to_tensor(pre_cal_weights, dtype=tf.float32)
             one_hot_labels = tf.one_hot(labels, depth=self.config.num_classes)
             weights = tf.reduce_sum(class_weights * one_hot_labels, axis=1)
             weights = tf.expand_dims(weights,1)
             logits = tf.cast(logits, dtype=tf.float32)
-            labels = tf.one_hot(labels, depth=self.config.num_classes)
-            
-            logpt = -tf.compat.v1.losses.sigmoid_cross_entropy(
-                multi_class_labels = labels,
-                logits=logits,
-                weights=weights
+            logpt = tf.nn.softmax_cross_entropy_with_logits_v2(
+                logits=logits, labels=one_hot_labels
             )
 
             pt = tf.math.exp(logpt)
 
+            unweighted_losses = -((1 - pt) ** gamma) * logpt
             if alpha is not None:
-                logpt *= alpha
-
-            output_loss = -((1 - pt) ** gamma) * logpt
-
-            if batch_average:
-                output_loss /= self.config.batch_size
-
+                unweighted_losses =  alpha * unweighted_losses
+            weighted_losses = unweighted_losses * weights
+            output_loss = tf.reduce_mean(weighted_losses)
+        
         elif loss_type=="sigmoid":
             class_weights = tf.convert_to_tensor(pre_cal_weights, dtype=tf.float32)
             one_hot_labels = tf.one_hot(labels, depth=self.config.num_classes)
@@ -522,6 +488,8 @@ class Network:
         # activation_fn
         if activation_fn == "relu":
             f_agg = tf.nn.relu(f_agg)
+        elif activation_fn == "leaky_relu":
+            f_agg = tf.nn.leaky_relu(f_agg)
 
         f_agg = tf.reshape(f_agg, [batch_size, num_points, 1, d])
         f_agg = tf_util.conv2d(f_agg, d_out, [1, 1], name + 'mlp', [1, 1], 'VALID', True, is_training)
