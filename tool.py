@@ -43,16 +43,16 @@ class ConfigSensatUrban:
     loss_func = "crossE" # crossE sigmoid and focalL
     loss_type = 'sqrt' # sqrt balance 
     # focal Loss
-    gamma = 1.0
+    gamma = 2.0
     # pooling
     reduction = "mean" # sum and mean
-    activation_fn = "relu"
+    activation_fn = "relu" # relu and leaky_relu
     # xyz concat color or pure color as feature
     rgb_only = False 
     
     # data augmentation
-    enhance_xyz = False
-    enhance_color = False
+    enhance_xyz = True
+    enhance_color = True
     # enhancing pos info
     rot_type = "vertical"
     augment_scale_min = 0.7
@@ -64,7 +64,7 @@ class ConfigSensatUrban:
     drop_color = True
     augment_color = 0.8
     # color Jitter
-    jitter_color = False
+    jitter_color = True
     # autocontrast
     auto_contrast = False
     blend_factor= 0.5
@@ -207,7 +207,7 @@ class DataProcessing:
             return points[idx], features[idx], labels[idx]
 
     @staticmethod
-    def get_class_weights(num_per_class, name='sqrt', rebalance_weight=True):
+    def get_class_weights(num_per_class, name='sqrt'):
         # # pre-calculate the number of points in each category
         frequency = num_per_class / float(sum(num_per_class))
         if name == 'sqrt' or name == 'lovas':
@@ -219,14 +219,6 @@ class DataProcessing:
             effective_num = 1.0 - np.power(beta, frequency)
             weights = (1.0 - beta) / np.array(effective_num)
             ce_label_weight = weights / np.sum(weights) * num_cls
-            
-            
-            if rebalance_weight:
-                for count, weight in enumerate(ce_label_weight):
-                    if count == 3:
-                        ce_label_weight[count] = ce_label_weight[count]*1.5
-                    elif count in [5, 7, 8, 9, 10]:
-                        ce_label_weight[count] = ce_label_weight[count]*2.0
             # ce_label_weight = weights 
         else:
             raise ValueError('Only support sqrt and wce and balance')
