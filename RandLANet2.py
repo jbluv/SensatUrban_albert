@@ -51,7 +51,6 @@ class Network2:
             self.correct_prediction = 0
             self.accuracy = 0
             self.mIou_list = [0]
-            self.loss_type = 'sqrt'  # wce, lovas
             self.class_weights = DP.get_class_weights(dataset.num_per_class, self.loss_type)
             self.T = time.strftime('_%Y-%m-%d_%H-%M-%S', time.gmtime())
             self.Log_file = open('log_train_' + dataset.name + self.T + '.txt', 'a')
@@ -80,7 +79,7 @@ class Network2:
                 reducing_list = tf.concat([reducing_list[:ign_label], inserted_value, reducing_list[ign_label:]], 0)
             valid_labels = tf.gather(reducing_list, valid_labels_init)
 
-            self.loss = self.get_loss(valid_logits, valid_labels, self.class_weights)
+            self.loss = self.get_loss(valid_logits, valid_labels, self.class_weights, loss_type=self.loss_func)
 
         with tf.variable_scope('optimizer'):
             self.learning_rate = tf.Variable(config.learning_rate, trainable=False, name='learning_rate')
@@ -329,15 +328,51 @@ class Network2:
         log_out('-' * len(s) + '\n', self.Log_file)
         return mean_iou
 
-    def get_loss(self, logits, labels, pre_cal_weights):
+        def get_loss(self, logits, labels, pre_cal_weights, loss_type="crossE"):
         # calculate the weighted cross entropy according to the inverse frequency
-        class_weights = tf.convert_to_tensor(pre_cal_weights, dtype=tf.float32)
-        one_hot_labels = tf.one_hot(labels, depth=self.config.num_classes)
-        weights = tf.reduce_sum(class_weights * one_hot_labels, axis=1)
-        unweighted_losses = tf.nn.softmax_cross_entropy_with_logits_v2(logits=logits, labels=one_hot_labels)
-        weighted_losses = unweighted_losses * weights
-        output_loss = tf.reduce_mean(weighted_losses)
+        if loss_type == "crossE":
+            class_weights = tf.convert_to_tensor(pre_cal_weights, dtype=tf.float32)
+            one_hot_labels = tf.one_hot(labels, depth=self.config.num_classes)
+            weights = tf.reduce_sum(class_weights * one_hot_labels, axis=1)
+            unweighted_losses = tf.nn.softmax_cross_entropy_with_logits_v2(logits=logits, labels=one_hot_labels)
+            weighted_losses = unweighted_losses * weights
+            output_loss = tf.reduce_mean(weighted_losses)
+        elif loss_type == "focalL":
+
+            n = tf.shape(logits)[0]
+            gamma = self.gamma
+            alpha = 0.5
+            class_weights = tf.convert_to_tensor(pre_cal_weights, dtype=tf.float32)
+            one_hot_labels = tf.one_hot(labels, depth=self.config.num_classes)
+            weights = tf.reduce_sum(class_weights * one_hot_labels, axis=1)
+            weights = tf.expand_dims(weights,1)
+            logits = tf.cast(logits, dtype=tf.float32)
+            logpt = tf.nn.softmax_cross_entropy_with_logits_v2(
+                logits=logits, labels=one_hot_labels
+            )
+
+            pt = tf.math.exp(logpt)
+
+            unweighted_losses = -((1 - pt) ** gamma) * logpt
+            if alpha is not None:
+                unweighted_losses =  alpha * unweighted_losses
+            weighted_losses = unweighted_losses * weights
+            output_loss = tf.reduce_mean(weighted_losses)
+        
+        elif loss_type=="sigmoid":
+            class_weights = tf.convert_to_tensor(pre_cal_weights, dtype=tf.float32)
+            one_hot_labels = tf.one_hot(labels, depth=self.config.num_classes)
+            weights = tf.reduce_sum(class_weights * one_hot_labels, axis=1)
+            unweighted_losses = tf.nn.sigmoid_cross_entropy_with_logits(
+                    labels=one_hot_labels, logits=logits)
+            weights = tf.expand_dims(weights, axis=1)
+            weighted_losses = unweighted_losses * weights
+            # Normalize by the total number of positive samples.
+            output_loss = tf.reduce_sum(weighted_losses) / tf.reduce_sum(one_hot_labels)
+        else:
+            raise ValueError('Only support softmax cross entropy and focal loss and sigmoid')
         return output_loss
+
 
     def dilated_res_block(self, feature, xyz, neigh_idx, d_out, name, is_training):
         f_pc = tf_util.conv2d(feature, d_out // 2, [1, 1], name + 'mlp1', [1, 1], 'VALID', True, is_training)
@@ -495,12 +530,12 @@ class point_transformer():
         gamma = tf.layers.dense((qk + pos_enc), d, activation=None, name=name +'gamma1')
         gamma = tf.nn.relu(gamma)
         gamma = tf.layers.dense(gamma, d, activation=None, name=name +'gamma2')
-
+        # normalize
         gamma = gamma / np.sqrt(d)
+        # softmax
         attn = tf.nn.softmax(gamma, axis=-2)
 
-        if self.bn:
-            attn = tf.layers.batch_normalization(attn, -1, 0.99, 1e-6, training=is_training)
+
         out =  attn * (x_v+pos_enc)
 
         if self.reduction=="sum":
@@ -521,9 +556,11 @@ class point_transformer():
 
         # if self.bn:
         #     out = tf.layers.batch_normalization(out, -1, 0.99, 1e-6, training=is_training)
-        # activation_fn
+        # # activation_fn
         # if self.activation_fn == "relu":
         #     out = tf.nn.relu(out)
+        # elif self.activation_fn == "leaky_relu":
+        #     out = tf.nn.leaky_relu(out)
 
         out = tf.reshape(out, [batch_size, num_points, 1, d])
         out = tf_util.conv2d(out, d_out, [1, 1], name + 'ml', [1, 1], 'VALID', True, is_training)
