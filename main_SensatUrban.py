@@ -287,13 +287,19 @@ class SensatUrban:
                 
                 if cfg.jitter_color:
                     p=0.95
-                    std=0.01
                     batch_features = tf.reshape(batch_features,(-1,3)) 
                     if np.random.rand() < p:
-                        noise = np.random.randn(cfg.batch_size*cfg.num_points, 3)
-                        noise *= std * rbg_range
-                        batch_features = tf.clip_by_value(noise + batch_features, clip_value_min=0, clip_value_max=rbg_range) 
-                    batch_features = tf.reshape(batch_features,(cfg.batch_size ,-1,3))
+                        noise = tf.random_normal(tf.shape(batch_features), stddev=cfg.augment_noise)
+                        batch_features = tf.clip_by_value(noise + batch_features, clip_value_min=0, clip_value_max=rbg_range)
+                    h_features = tf.reshape(batch_features,(cfg.batch_size ,-1,3))
+                    # p=0.95
+                    # std=0.01
+                    # batch_features = tf.reshape(batch_features,(-1,3)) 
+                    # if np.random.rand() < p:
+                    #     noise = np.random.randn(cfg.batch_size*cfg.num_points, 3)
+                    #     noise *= std * rbg_range
+                    #     batch_features = tf.clip_by_value(noise + batch_features, clip_value_min=0, clip_value_max=rbg_range) 
+                    # batch_features = tf.reshape(batch_features,(cfg.batch_size ,-1,3))
 
                 if cfg.translate_color:
                     trans_range_ratio = 0.95
@@ -439,7 +445,7 @@ if __name__ == '__main__':
         snap_path = join(chosen_folder, 'snapshots')
         snap_steps = [int(f[:-5].split('-')[-1]) for f in os.listdir(snap_path) if f[-5:] == '.meta']
         chosen_step = np.sort(snap_steps)[-1]
-        chosen_snap = os.path.join(snap_path, 'snap-(51.49%)-{:d}'.format(chosen_step))
+        chosen_snap = os.path.join(snap_path, 'snap-(51.96%)-{:d}'.format(chosen_step))
         tester = ModelTester(model, dataset, restore_snap=chosen_snap)
         tester.test(model, dataset)
         shutil.rmtree('train_log') if exists('train_log') else None
