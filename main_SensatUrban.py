@@ -26,7 +26,11 @@ class SensatUrban:
         self.label_values = np.sort([k for k, v in self.label_to_names.items()])
         self.label_to_idx = {l: i for i, l in enumerate(self.label_values)}
         self.ignored_labels = np.array([])
-
+        ######                  ######
+        ###### Testing     cfg  ######
+        ######                  ######
+        augment_test_mode = 0
+        
         self.all_files = np.sort(glob.glob(join(self.path, 'original_block_ply', '*.ply')))
         self.val_file_name = ['birmingham_block_1',
                               'birmingham_block_5',
@@ -35,6 +39,10 @@ class SensatUrban:
         self.test_file_name = ['birmingham_block_2', 'birmingham_block_8',
                                'cambridge_block_15', 'cambridge_block_22',
                                'cambridge_block_16', 'cambridge_block_27']
+        if augment_test_mode:
+            self.all_files = ["/hy-tmp/SensatUrban_albert/Dataset/SensatUrban/original_block_ply/birmingham_block_0.ply"]
+            self.val_file_name = []
+            self.test_file_name = []
         self.use_val = True  # whether use validation set or not
 
         # initialize
@@ -273,7 +281,8 @@ class SensatUrban:
                 batch_xyz = tf.reshape(batch_xyz,(cfg.batch_size ,-1,3)) 
             
             if cfg.enhance_color:
-                rbg_range = 1  # 255
+                rbg_range = 255  # 255
+                rng = np.random.default_rng(None)
                 if cfg.auto_contrast:
                     # to avoid chromatic drop problems
                     batch_features = tf.reshape(batch_features,(-1,3)) 
@@ -286,12 +295,13 @@ class SensatUrban:
                     batch_features = tf.reshape(batch_features,(cfg.batch_size ,-1,3))
                 
                 if cfg.jitter_color:
-                    p=0.95
-                    batch_features = tf.reshape(batch_features,(-1,3)) 
-                    if np.random.rand() < p:
-                        noise = tf.random_normal(tf.shape(batch_features), stddev=cfg.augment_noise)
-                        batch_features = tf.clip_by_value(noise + batch_features, clip_value_min=0, clip_value_max=rbg_range)
-                    h_features = tf.reshape(batch_features,(cfg.batch_size ,-1,3))
+                    std = 0.01
+                    batch_features = tf.reshape(batch_features,(-1,3))
+                    if rng.random() < 0.95:
+                        noise = rng.standard_normal((cfg.batch_size*cfg.num_points, 3))
+                        noise *= std * rbg_range
+                        batch_features =  tf.clip_by_value(noise + batch_features, 0, rbg_range)
+                    batch_features = tf.reshape(batch_features,(cfg.batch_size ,-1,3))
                     # p=0.95
                     # std=0.01
                     # batch_features = tf.reshape(batch_features,(-1,3)) 
@@ -302,11 +312,11 @@ class SensatUrban:
                     # batch_features = tf.reshape(batch_features,(cfg.batch_size ,-1,3))
 
                 if cfg.translate_color:
-                    trans_range_ratio = 0.95
+                    trans_range_ratio = 0.1
                     batch_features = tf.reshape(batch_features,(-1,3))
-                    if np.random.rand() < trans_range_ratio:
-                        tr = np.random.randn(1, 3) * rbg_range * 2 * trans_range_ratio
-                        batch_features = tf.clip_by_value(tr + batch_features, clip_value_min=0, clip_value_max=rbg_range) 
+                    if rng.random() < 0.95:
+                        tr = (rng.random((1, 3)) -0.5) * rbg_range * 2 * trans_range_ratio
+                        batch_features =  tf.clip_by_value(tr + batch_features, 0, rbg_range) 
                     batch_features = tf.reshape(batch_features,(cfg.batch_size ,-1,3))  
                     
                 if cfg.drop_color:
@@ -430,12 +440,12 @@ if __name__ == '__main__':
 
     if Mode == 'train':
         # model = Network(dataset, cfg)
-        restore_snap = "/hy-tmp/SensatUrban_albert/result/Point-transformer:  sqrt + crossE + xyz: True + color: False/snapshots/snap-(47.14%)-12501"
+        restore_snap = "/hy-tmp/SensatUrban_albert/result/ Point-transformer:  balance + crossE + xyz: True  CB/snapshots/snap-(30.47%)-16501"
         # model = Network3(dataset, cfg, None)
         # model.train(dataset)
         model = Network2(dataset, cfg, None)
         model.train(dataset)
-    
+     
     elif Mode == 'test':
         cfg.saving = False
         model = Network2(dataset, cfg)
@@ -445,7 +455,7 @@ if __name__ == '__main__':
         snap_path = join(chosen_folder, 'snapshots')
         snap_steps = [int(f[:-5].split('-')[-1]) for f in os.listdir(snap_path) if f[-5:] == '.meta']
         chosen_step = np.sort(snap_steps)[-1]
-        chosen_snap = os.path.join(snap_path, 'snap-(51.96%)-{:d}'.format(chosen_step))
+        chosen_snap = os.path.join(snap_path, 'snap-(51.66%)-{:d}'.format(chosen_step))
         tester = ModelTester(model, dataset, restore_snap=chosen_snap)
         tester.test(model, dataset)
         shutil.rmtree('train_log') if exists('train_log') else None
@@ -476,10 +486,10 @@ if __name__ == '__main__':
                 xyz = data_list[0]
                 sub_xyz = data_list[1]
                 label = data_list[21]
-                with open("xyz_flat.pkl", 'wb') as f:
+                with open("xyz_flat_enhance(drop color).pkl", 'wb') as f:
                     pickle.dump(xyz, f)
-                with open("label_flat.pkl", 'wb') as f:
+                with open("label_flat_enhance(drop color).pkl", 'wb') as f:
                     pickle.dump(label, f)
                 # Plot.draw_pc_sem_ins(xyz[0, :, :], label[0, :])
                 break
-        print("wrong mode!!!!!")
+        print("pickle file generated!!!!!")
