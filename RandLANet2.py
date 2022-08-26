@@ -2,12 +2,14 @@ from os.path import exists, join
 from os import makedirs
 from sklearn.metrics import confusion_matrix
 from tool import DataProcessing as DP
+from tool import cosine_decay_with_warmup
 import tensorflow as tf
 import numpy as np
 import tf_util
 import time
 import tensorflow.keras.layers as layers
 from tensorflow.keras import backend as K
+from tf_util import AdamWeightDecayOptimizer
 def log_out(out_str, f_out):
     f_out.write(out_str + '\n')
     f_out.flush()
@@ -17,12 +19,16 @@ class Network2:
     def __init__(self, dataset, config, restore_snap=None):
         flat_inputs = dataset.flat_inputs
         self.config = config
+        self.opt = config.opt
+        self.decay_type = config.decay_type
+        self.weight_decay = config.weight_decay
         self.lr_ = config.learning_rate
         self.loss_type = config.loss_type
         self.loss_func = config.loss_func
         self.reduction = config.reduction
         self.gamma = config.gamma
         self.activation_fn = config.activation_fn
+        self.lr_consine_decay = config.lr_consine_decays
         # Path of the result folder
         if self.config.saving:
             if self.config.saving_path is None:
@@ -79,11 +85,16 @@ class Network2:
                 reducing_list = tf.concat([reducing_list[:ign_label], inserted_value, reducing_list[ign_label:]], 0)
             valid_labels = tf.gather(reducing_list, valid_labels_init)
 
-            self.loss = self.get_loss(valid_logits, valid_labels, self.class_weights, loss_type=self.loss_func)
+            self.loss = self.get_loss(valid_logits, valid_labels, self.class_weights, loss_func=self.loss_func)
 
         with tf.variable_scope('optimizer'):
             self.learning_rate = tf.Variable(config.learning_rate, trainable=False, name='learning_rate')
-            self.train_op = tf.train.AdamOptimizer(self.learning_rate).minimize(self.loss)
+            if self.opt == "adam":
+                self.train_op = tf.train.AdamOptimizer(self.learning_rate).minimize(self.loss)
+            elif self.opt == "adamW":
+                self.train_op = AdamWeightDecayOptimizer(learning_rate=self.learning_rate,
+                                                    weight_decay_rate=self.weight_decay,
+                                                    exclude_from_weight_decay=["bias"]).minimize(self.loss)
             self.extra_update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
 
         with tf.variable_scope('results'):
@@ -107,6 +118,8 @@ class Network2:
         structure = "Runnnig Point-transformer:  "+self.loss_type+" + "+self.loss_func 
         structure += " + xyz: "+str(cfg.enhance_xyz)+" + color: "+str(cfg.enhance_color)
         cls_weights = "cls_weights: "+ str(self.class_weights)
+        opt = "opt: "+ str(self.opt)+" -> weight_decay: "+str(self.weight_decay)
+        decay_type = "decay_type: "+ str(self.decay_type) 
         loss = "loss: "+ str(self.loss_type)
         loss_func = "loss_func: "+ str(self.loss_func)
         gamma = "gamma(focalL): "+ str(self.gamma)
@@ -125,7 +138,7 @@ class Network2:
         noise_init = "noise_init: "+str(cfg.noise_init)
         max_epoch = "max_epoch: "+str(cfg.max_epoch)
         learning_rate = "learning_rate: "+str(cfg.learning_rate)
-        log_output = [structure, cls_weights, rgb_only, loss, loss_func, gamma, reduction, k_n, num_layers, num_points, num_classes, sub_grid_size,\
+        log_output = [structure, cls_weights, rgb_only, opt, decay_type, loss, loss_func, gamma, reduction, k_n, num_layers, num_points, num_classes, sub_grid_size,\
                    batch_size, val_batch_size, train_steps, val_steps, d_out, noise_init, max_epoch, learning_rate]
         # data augmentation
         enhance_xyz = "enhance_xyz: "+str(cfg.enhance_xyz)
@@ -248,8 +261,13 @@ class Network2:
                 self.training_epoch += 1
                 self.sess.run(dataset.train_init_op)
                 # Update learning rate
-                self.lr_ = self.lr_*self.config.lr_decays[self.training_epoch]
-                updated_lr = tf.multiply(self.learning_rate, self.config.lr_decays[self.training_epoch])
+                if self.decay_type == "steps":
+                    self.lr_ = self.lr_*self.config.lr_decays[self.training_epoch]
+                    updated_lr = tf.multiply(self.learning_rate, self.config.lr_decays[self.training_epoch])
+                elif self.decay_type == "cosine":
+                    self.lr_ = self.lr_consine_decay[self.training_epoch]
+                    updated_lr = tf.convert_to_tensor(self.lr_, dtype=tf.float32)
+
                 op = self.learning_rate.assign(updated_lr)
                 self.sess.run(op)
                 log_out('****EPOCH {}**** loss:{}'.format(self.training_epoch, self.lr_), self.Log_file)
@@ -328,38 +346,44 @@ class Network2:
         log_out('-' * len(s) + '\n', self.Log_file)
         return mean_iou
 
-        def get_loss(self, logits, labels, pre_cal_weights, loss_type="crossE"):
+    def get_loss(self, logits, labels, pre_cal_weights, loss_func="crossE"):
         # calculate the weighted cross entropy according to the inverse frequency
-        if loss_type == "crossE":
+        if loss_func == "crossE":
             class_weights = tf.convert_to_tensor(pre_cal_weights, dtype=tf.float32)
             one_hot_labels = tf.one_hot(labels, depth=self.config.num_classes)
             weights = tf.reduce_sum(class_weights * one_hot_labels, axis=1)
             unweighted_losses = tf.nn.softmax_cross_entropy_with_logits_v2(logits=logits, labels=one_hot_labels)
             weighted_losses = unweighted_losses * weights
             output_loss = tf.reduce_mean(weighted_losses)
-        elif loss_type == "focalL":
+        elif loss_func == "focalL":
 
             n = tf.shape(logits)[0]
             gamma = self.gamma
+            
             alpha = 0.5
+            if self.loss_type == "balance":
+                alpha = None
             class_weights = tf.convert_to_tensor(pre_cal_weights, dtype=tf.float32)
             one_hot_labels = tf.one_hot(labels, depth=self.config.num_classes)
             weights = tf.reduce_sum(class_weights * one_hot_labels, axis=1)
             weights = tf.expand_dims(weights,1)
             logits = tf.cast(logits, dtype=tf.float32)
-            logpt = tf.nn.softmax_cross_entropy_with_logits_v2(
+            logpt = tf.nn.sigmoid_cross_entropy_with_logits(
                 logits=logits, labels=one_hot_labels
             )
 
             pt = tf.math.exp(logpt)
 
+            # unweighted_losses = ((1 - pt) ** gamma) * logpt
             unweighted_losses = -((1 - pt) ** gamma) * logpt
+
             if alpha is not None:
                 unweighted_losses =  alpha * unweighted_losses
+
             weighted_losses = unweighted_losses * weights
             output_loss = tf.reduce_mean(weighted_losses)
         
-        elif loss_type=="sigmoid":
+        elif loss_func=="sigmoid":
             class_weights = tf.convert_to_tensor(pre_cal_weights, dtype=tf.float32)
             one_hot_labels = tf.one_hot(labels, depth=self.config.num_classes)
             weights = tf.reduce_sum(class_weights * one_hot_labels, axis=1)
