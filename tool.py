@@ -35,10 +35,19 @@ class ConfigSensatUrban:
     max_epoch = 100  # maximum epoch during training
     learning_rate = 1e-3 # initial learning rate
     lr_decays = {i: 0.95 for i in range(0, 500)}  # decay rate of learning rate
+    
 
     train_sum_dir = 'train_log_SensatUrban'
     saving = True
     saving_path = None
+    # learning rate decay type
+    decay_type = "steps" # cosine steps
+    # optimizer
+    opt = "adamW" # adam adamW
+    weight_decay = 0.001
+    lr_consine_decays = [cosine_decay_with_warmup(i, weight_decay,
+                                    learning_rate, warmup_learning_rate=0.0,
+                                    warmup_steps=0, hold_base_rate_steps=0) for i in range(max_epoch)]
     # loss function and loss weight
     loss_func = "crossE" # crossE sigmoid and focalL
     loss_type = 'sqrt' # sqrt balance 
@@ -46,25 +55,25 @@ class ConfigSensatUrban:
     gamma = 2.0
     # pooling
     reduction = "mean" # sum and mean
-    activation_fn = "relu" # relu and leaky_relu
+    activation_fn = "relu" # relu and leaky_relu 
     # xyz concat color or pure color as feature
     rgb_only = False 
     
     # data augmentation
     enhance_xyz = True
-    enhance_color = True
+    enhance_color = False
     # enhancing pos info
-    rot_type = "vertical"
+    rot_type = "vertical" #  Y-axis, vertical or arbitrary
     augment_scale_min = 0.7
     augment_scale_max = 1.3
     augment_symmetries = [True, False, False]
-    augment_noise= 0.001
+    augment_noise = 0.001
 
     # dropping color
-    drop_color = True
+    drop_color = False
     augment_color = 0.8
     # color Jitter
-    jitter_color = True
+    jitter_color = False
     # autocontrast
     auto_contrast = False
     blend_factor= 0.5
@@ -93,7 +102,7 @@ class DataProcessing:
         :param support_pts: points you have, B*N1*3
         :param query_pts: points you want to know the neighbour index, B*N2*3
         :param k: Number of neighbours in knn search
-        :return: neighbor_idx: neighboring points indexes, B*N2*k
+        :return: neighbor_idx: neighboring points indexes, B*N2*k~
         """
 
         neighbor_idx = nearest_neighbors.knn_batch(support_pts, query_pts, k, omp=True)
@@ -215,11 +224,11 @@ class DataProcessing:
         elif name == 'wce':
             ce_label_weight = 1 / (frequency + 0.02)
         elif name == 'balance':
-            beta, num_cls = 1e-15, 13
+            beta, num_cls = 0.999, 13
             effective_num = 1.0 - np.power(beta, frequency)
             weights = (1.0 - beta) / np.array(effective_num)
             ce_label_weight = weights / np.sum(weights) * num_cls
-            # ce_label_weight = weights 
+            ce_label_weight = ce_label_weight*100
         else:
             raise ValueError('Only support sqrt and wce and balance')
         return np.expand_dims(ce_label_weight, axis=0)
@@ -329,12 +338,19 @@ def tf_augment_input(stacked_points, batch_inds, rot_type, augment_scale_min, au
     
     # Parameter
     num_batches = batch_inds[-1] + 1
-    rotation_range = 0.25 * np.pi # 2 * np.pi
+    # max_rotation_range = 0.125 * np.pi # 2 * np.pi
+    # min_rotation_range = -0.125 * np.pi
+    max_rotation_range = 0.25 * np.pi # 2 * np.pi
+    min_rotation_range = 0
+    # max_rotation_range = 2 * np.pi # 2 * np.pi
+    # min_rotation_range = 0
+    xy_axis_max_rotation_range = 0.02 * np.pi # 2 * np.pi
+    xy_axis_min_rotation_range = 0
     # Rotation
     if rot_type == "vertical":
         print("veritical rotation")
         
-        theta = tf.random_uniform((num_batches,), minval=0, maxval=rotation_range)
+        theta = tf.random_uniform((num_batches,), minval=min_rotation_range, maxval=max_rotation_range)
         # Rotation matrices
         c, s = tf.cos(theta), tf.sin(theta)
         cs0 = tf.zeros_like(c)
@@ -350,23 +366,43 @@ def tf_augment_input(stacked_points, batch_inds, rot_type, augment_scale_min, au
         stacked_rots = tf.gather(R, batch_inds)
         # Apply rotations
         stacked_points = tf.reshape(tf.matmul(tf.expand_dims(stacked_points, axis=1), stacked_rots), [-1, 3])
+    elif rot_type == "Y-axis":
+        print("Y-axis rotation")
+        
+        theta = tf.random_uniform((num_batches,), minval=xy_axis_min_rotation_range, maxval=xy_axis_max_rotation_range)
+        # Rotation matrices
+        c, s = tf.cos(theta), tf.sin(theta)
+        cs0 = tf.zeros_like(c)
+        cs1 = tf.ones_like(c)
+        # c  0 -s
+        # 0  1  0
+        # s  0  c
+        R = tf.stack([c,  cs0, -s, \
+                      cs0,cs1, cs0, \
+                      s,  cs0, c   ], axis=1)
 
+        R = tf.reshape(R, (-1, 3, 3))
+        # Create N x 3 x 3 rotation matrices to multiply with stacked_points
+        stacked_rots = tf.gather(R, batch_inds)
+        # Apply rotations
+        stacked_points = tf.reshape(tf.matmul(tf.expand_dims(stacked_points, axis=1), stacked_rots), [-1, 3])
     elif rot_type == "arbitrary":
+
         print("arbitrary rotation")
         cs0 = tf.zeros((num_batches,))
         cs1 = tf.ones((num_batches,))
         # x rotation
-        thetax = tf.random_uniform((num_batches,), minval=0, maxval=rotation_range)
+        thetax = tf.random_uniform((num_batches,), minval=xy_axis_min_rotation_range, maxval=xy_axis_max_rotation_range)
         cx, sx = tf.cos(thetax), tf.sin(thetax)
         Rx = tf.stack([cs1, cs0, cs0, cs0, cx, -sx, cs0, sx, cx], axis=1)
         Rx = tf.reshape(Rx, (-1, 3, 3))
         # y rotation
-        thetay = tf.random_uniform((num_batches,), minval=0, maxval=rotation_range)
+        thetay = tf.random_uniform((num_batches,), minval=xy_axis_min_rotation_range, maxval=xy_axis_max_rotation_range)
         cy, sy = tf.cos(thetay), tf.sin(thetay)
         Ry = tf.stack([cy, cs0, -sy, cs0, cs1, cs0, sy, cs0, cy], axis=1)
         Ry = tf.reshape(Ry, (-1, 3, 3))
         # z rotation
-        thetaz = tf.random_uniform((num_batches,), minval=0, maxval=rotation_range)
+        thetaz = tf.random_uniform((num_batches,), minval=min_rotation_range, maxval=max_rotation_range)
         cz, sz = tf.cos(thetaz), tf.sin(thetaz)
         Rz = tf.stack([cz, -sz, cs0, sz, cz, cs0, cs0, cs0, cs1], axis=1)
         Rz = tf.reshape(Rz, (-1, 3, 3))
@@ -402,3 +438,54 @@ def tf_augment_input(stacked_points, batch_inds, rot_type, augment_scale_min, au
     noise = tf.random_normal(tf.shape(stacked_points), stddev=augment_noise)
     stacked_points = stacked_points + noise
     return stacked_points, s, R
+
+
+def cosine_decay_with_warmup(global_step,
+                             learning_rate_base,
+                             total_steps,
+                             warmup_learning_rate=0.0,
+                             warmup_steps=0,
+                             hold_base_rate_steps=0):
+    """Cosine decay schedule with warm up period.
+    Cosine annealing learning rate as described in:
+      Loshchilov and Hutter, SGDR: Stochastic Gradient Descent with Warm Restarts.
+      ICLR 2017. https://arxiv.org/abs/1608.03983
+    In this schedule, the learning rate grows linearly from warmup_learning_rate
+    to learning_rate_base for warmup_steps, then transitions to a cosine decay
+    schedule.
+    Arguments:
+        global_step {int} -- global step.
+        learning_rate_base {float} -- base learning rate.
+        total_steps {int} -- total number of training steps.
+    Keyword Arguments:
+        warmup_learning_rate {float} -- initial learning rate for warm up. (default: {0.0})
+        warmup_steps {int} -- number of warmup steps. (default: {0})
+        hold_base_rate_steps {int} -- Optional number of steps to hold base learning rate
+                                    before decaying. (default: {0})
+    Returns:
+      a float representing learning rate.
+    Raises:
+      ValueError: if warmup_learning_rate is larger than learning_rate_base,
+        or if warmup_steps is larger than total_steps.
+    """
+
+    if total_steps < warmup_steps:
+        raise ValueError('total_steps must be larger or equal to '
+                         'warmup_steps.')
+    learning_rate = 0.5 * learning_rate_base * (1 + np.cos(
+        np.pi *
+        (global_step - warmup_steps - hold_base_rate_steps
+         ) / float(total_steps - warmup_steps - hold_base_rate_steps)))
+    if hold_base_rate_steps > 0:
+        learning_rate = np.where(global_step > warmup_steps + hold_base_rate_steps,
+                                 learning_rate, learning_rate_base)
+    if warmup_steps > 0:
+        if learning_rate_base < warmup_learning_rate:
+            raise ValueError('learning_rate_base must be larger or equal to '
+                             'warmup_learning_rate.')
+        slope = (learning_rate_base - warmup_learning_rate) / warmup_steps
+        warmup_rate = slope * global_step + warmup_learning_rate
+        learning_rate = np.where(global_step < warmup_steps, warmup_rate,
+                                 learning_rate)
+
+    return learning_rate
