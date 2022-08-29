@@ -28,7 +28,9 @@ class Network2:
         self.reduction = config.reduction
         self.gamma = config.gamma
         self.activation_fn = config.activation_fn
-        self.lr_consine_decay = config.lr_consine_decays
+        self.lr_consine_decay = [cosine_decay_with_warmup(i, self.lr_,
+                                    config.max_epoch, warmup_learning_rate=0.0,
+                                    warmup_steps=0, hold_base_rate_steps=0) for i in range(config.max_epoch)]
         # Path of the result folder
         if self.config.saving:
             if self.config.saving_path is None:
@@ -118,7 +120,7 @@ class Network2:
         structure = "Runnnig Point-transformer:  "+self.loss_type+" + "+self.loss_func 
         structure += " + xyz: "+str(cfg.enhance_xyz)+" + color: "+str(cfg.enhance_color)
         cls_weights = "cls_weights: "+ str(self.class_weights)
-        opt = "opt: "+ str(self.opt)+" -> weight_decay: "+str(self.weight_decay)
+        opt = "opt: "+ str(self.opt)+" -> weight_decay(adamW only): "+str(self.weight_decay)
         decay_type = "decay_type: "+ str(self.decay_type) 
         loss = "loss: "+ str(self.loss_type)
         loss_func = "loss_func: "+ str(self.loss_func)
