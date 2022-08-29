@@ -15,7 +15,6 @@ sys.path.append(os.path.join(BASE_DIR, 'utils'))
 import cpp_wrappers.cpp_subsampling.grid_subsampling as cpp_subsampling
 import nearest_neighbors.lib.python.nearest_neighbors as nearest_neighbors
 
-
 class ConfigSensatUrban:
     k_n = 16  # KNN
     num_layers = 5  # Number of layers
@@ -32,7 +31,7 @@ class ConfigSensatUrban:
     d_out = [16, 64, 128, 256, 512]  # feature dimension
 
     noise_init = 3.5  # noise initial parameter
-    max_epoch = 100  # maximum epoch during training
+    max_epoch = 50  # maximum epoch during training
     learning_rate = 1e-3 # initial learning rate
     lr_decays = {i: 0.95 for i in range(0, 500)}  # decay rate of learning rate
     
@@ -41,13 +40,11 @@ class ConfigSensatUrban:
     saving = True
     saving_path = None
     # learning rate decay type
-    decay_type = "steps" # cosine steps
+    decay_type = "cosine" # cosine steps
     # optimizer
     opt = "adamW" # adam adamW
-    weight_decay = 0.001
-    lr_consine_decays = [cosine_decay_with_warmup(i, weight_decay,
-                                    learning_rate, warmup_learning_rate=0.0,
-                                    warmup_steps=0, hold_base_rate_steps=0) for i in range(max_epoch)]
+    weight_decay = 1e-3
+    
     # loss function and loss weight
     loss_func = "crossE" # crossE sigmoid and focalL
     loss_type = 'sqrt' # sqrt balance 
@@ -438,6 +435,7 @@ def tf_augment_input(stacked_points, batch_inds, rot_type, augment_scale_min, au
     noise = tf.random_normal(tf.shape(stacked_points), stddev=augment_noise)
     stacked_points = stacked_points + noise
     return stacked_points, s, R
+
 
 
 def cosine_decay_with_warmup(global_step,
