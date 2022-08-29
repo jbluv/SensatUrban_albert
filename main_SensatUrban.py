@@ -455,7 +455,7 @@ if __name__ == '__main__':
         snap_path = join(chosen_folder, 'snapshots')
         snap_steps = [int(f[:-5].split('-')[-1]) for f in os.listdir(snap_path) if f[-5:] == '.meta']
         chosen_step = np.sort(snap_steps)[-1]
-        chosen_snap = os.path.join(snap_path, 'snap-(51.66%)-{:d}'.format(chosen_step))
+        chosen_snap = os.path.join(snap_path, 'snap-(52.91%)-{:d}'.format(chosen_step))
         tester = ModelTester(model, dataset, restore_snap=chosen_snap)
         tester.test(model, dataset)
         shutil.rmtree('train_log') if exists('train_log') else None
