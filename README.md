@@ -17,6 +17,10 @@ https://drive.google.com/file/d/1wJlDjykVdnZBe4RXw6J6l01bmBAM2XNr/view?usp=shari
 Pointtrans 50 epochs model and log file(final model): 
 https://drive.google.com/file/d/1b9M7IMOTrEX5qt80tZK8f4R23upv6f_i/view?usp=share_link
 
+**Overall Structure Of The Network:**
+
+![image](https://user-images.githubusercontent.com/43678364/202579348-560bf739-397c-4c5c-8233-b0bb6b635c6d.png)
+
 **Result:**
 
 ![pointtrans](https://user-images.githubusercontent.com/43678364/202577950-08787ebb-f09d-4ba8-8cbc-137644d5424d.gif)
