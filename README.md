@@ -3,10 +3,13 @@
 **UCL CGVI Absrtact**
 
 The goal of this project is to systematically study the 3D semantic segmentation and improve the performance of the network on the urban-scaled point cloud dataset "SensatUrban”. Ideally, train a robust network that can fuse and understand noisy urban data from multiple sources and create a semantically labeled 3D model of urban scale. 
+
 In this project we studied and evaluated three state-of-art network structures that can be used in semantic segmentation: randlanet, multi-head attention layer and point transformer. 
+
 Various data enhancement techniques based on KPConv and PointNext are also applied to the network. Eventually, compare to the baseline, we achieved an 8.0% of mIoU increasement on the test set.
 
-![Uploading image.png…]()
+![image](https://user-images.githubusercontent.com/43678364/202579053-afdfb958-6c4f-40af-a9c2-8abaff6e6592.png)
+
 
 Randlanet 100 epochs model and log file(baseline): 
 https://drive.google.com/file/d/1wJlDjykVdnZBe4RXw6J6l01bmBAM2XNr/view?usp=sharing
