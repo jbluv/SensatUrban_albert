@@ -6,6 +6,17 @@ https://drive.google.com/file/d/1wJlDjykVdnZBe4RXw6J6l01bmBAM2XNr/view?usp=shari
 
 Pointtrans 50 epochs model and log file(final model): 
 
+**Model Performance Comparison**
+
+Test set scores:
+
+![image](https://user-images.githubusercontent.com/43678364/202578853-c6b3a7ff-2c3a-4b31-bf0c-1c5f99ac7140.png)
+
+Baseline and final model comparison:
+
+![image](https://user-images.githubusercontent.com/43678364/202578883-24e1bbd3-5f41-4de7-84b4-94b4db5eed86.png)
+
+
 **Result:**
 
 ![pointtrans](https://user-images.githubusercontent.com/43678364/202577950-08787ebb-f09d-4ba8-8cbc-137644d5424d.gif)
