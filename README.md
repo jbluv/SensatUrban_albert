@@ -10,6 +10,8 @@ Various data enhancement techniques based on KPConv and PointNext are also appli
 
 ![image](https://user-images.githubusercontent.com/43678364/202579053-afdfb958-6c4f-40af-a9c2-8abaff6e6592.png)
 
+Thesis:
+https://drive.google.com/file/d/1BsRbLxOYe0Xi1sOM2a7SibiqO4zHw2oH/view?usp=sharing
 
 Randlanet 100 epochs model and log file(baseline): 
 https://drive.google.com/file/d/1wJlDjykVdnZBe4RXw6J6l01bmBAM2XNr/view?usp=sharing
@@ -42,4 +44,3 @@ Test set scores:
 Baseline and final model comparison:
 
 ![image](https://user-images.githubusercontent.com/43678364/202578883-24e1bbd3-5f41-4de7-84b4-94b4db5eed86.png)
-
