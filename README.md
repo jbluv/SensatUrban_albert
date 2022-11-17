@@ -15,6 +15,7 @@ Randlanet 100 epochs model and log file(baseline):
 https://drive.google.com/file/d/1wJlDjykVdnZBe4RXw6J6l01bmBAM2XNr/view?usp=sharing
 
 Pointtrans 50 epochs model and log file(final model): 
+https://drive.google.com/file/d/1b9M7IMOTrEX5qt80tZK8f4R23upv6f_i/view?usp=share_link
 
 **Result:**
 
